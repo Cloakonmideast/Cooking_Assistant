@@ -1,0 +1,40 @@
+This XML file does not appear to have any style information associated with it. The document tree is shown below.
+<!-- 
+
+     This file is a call center definition file for Salesforce
+     Call Center. It is used to demo the call center expereince
+     in Salesforce orgs. When added to Salesforce, it creates 
+     a call center to which you can assign users. Assigned 
+     users can then see a blank softphone to understand
+     where a softphone displays in Salesforce. functional 
+     call centers and softphones are available for 
+     download on the AppExchange. For more details, 
+     see the Salesforce help. 
+     
+     All sections and items whose name value begins with "req" are
+     required in a valid call center definition file. The sortOrder
+     and label attributes can be changed for all required sections
+     and items except reqGeneralInfo, reqInternalName, and
+     reqDisplayName, in which only the label attribute can be altered.
+
+	Note that the value for the reqInternalName item is limited to
+     40 alphanumeric characters and must start with an alphabetic
+     character. reqInternalName must be unique for all call centers
+     that you define.
+ -->
+<callCenter>
+<section sortOrder="0" name="reqGeneralInfo" label="General Information">
+<item sortOrder="0" name="reqInternalName" label="InternalName">OpenCTI</item>
+<item sortOrder="1" name="reqDisplayName" label="Display Name">OpenCTI</item>
+<item sortOrder="2" name="reqAdapterUrl" label="CTI Adapter URL">https://domain:port/softphone</item>
+<item sortOrder="3" name="reqUseApi" label="Use CTI API">true</item>
+<item sortOrder="4" name="reqSoftphoneHeight" label="Softphone Height">300</item>
+<item sortOrder="5" name="reqSoftphoneWidth" label="Softphone Width">500</item>
+<item sortOrder="6" name="reqSalesforceCompatibilityMode" label="Salesforce Compatibility Mode">Lightning</item>
+</section>
+<section sortOrder="1" name="reqDialingOptions" label="Dialing Options">
+<item sortOrder="0" name="reqOutsidePrefix" label="Outside Prefix">9</item>
+<item sortOrder="1" name="reqLongDistPrefix" label="Long Distance Prefix">1</item>
+<item sortOrder="2" name="reqInternationalPrefix" label="International Prefix">01</item>
+</section>
+</callCenter>
