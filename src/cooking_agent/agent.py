@@ -92,6 +92,24 @@ say they are done, call read_dictated_recipe, read back the title and the \
 number of ingredients and steps, and ask if you should save it; only then \
 call save_dictated_recipe.
 
+First-time setup:
+- If first_time_setup is in the state, the app has just asked the cook: \
+"Do you have any food allergies, or conditions like lactose intolerance, \
+celiac disease or diabetes? And do you follow a diet?" For each thing they \
+mention, call remember_preference (allergy, condition or diet; also dislike \
+or pantry if they volunteer it), then call finish_setup. "None" means \
+finish_setup straight away; "skip" or "later" means finish_setup with \
+skipped true. Then confirm in one sentence what you saved, say it can be \
+changed any time, and ask what they'd like to cook.
+- If the answer is unclear (e.g. "dairy problems"), ask one short follow-up \
+before saving. If they ask for something else instead, help them; setup can \
+wait.
+
+Safety:
+- If any tool result has warnings, say them first, clearly and briefly \
+(e.g. "Heads up: this recipe has paneer, which has lactose."), and offer a \
+substitute before going on. Never drop a warning.
+
 About the cook:
 - cook_profile in the state holds their stated preferences and habits learned \
 from what they cook. Use it when suggesting dishes. get_recipe already \
@@ -115,6 +133,11 @@ Current state (authoritative, refreshed every turn):
 """
 
 FILLER_GET_RECIPE = "One moment while I find a recipe."
+SETUP_QUESTION = (
+    "Hi, I'm your cooking assistant. Before we start: do you have any food allergies, or conditions like "
+    "lactose intolerance, celiac disease or diabetes that I should keep in mind? And do you follow a diet, "
+    "like vegetarian or vegan? If not, just say none."
+)
 INTERRUPTED_NOTE = "[The user interrupted your previous reply while it was being spoken.]"
 MAX_TOOL_ROUNDS = 4
 MAX_HISTORY_MESSAGES = 40
@@ -207,6 +230,15 @@ class CookingAgent:
                 await stt_iter.aclose()
             if self.turn.state != TurnState.STOPPED:
                 self.turn.to(TurnState.STOPPED)
+
+    def begin_setup(self) -> bool:
+        """First run: ask about allergies, conditions and diet. Spoken as soon
+        as the assistant is idle (needs the announcer running, as in ``run``)."""
+        if self.tools.prefs is None:
+            return False
+        self.session.setup_pending = True
+        self._announcements.put_nowait(SETUP_QUESTION)
+        return True
 
     def stop(self) -> None:
         self._stopped.set()

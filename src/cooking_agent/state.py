@@ -85,6 +85,7 @@ class CookingSession:
     awaiting: Optional[Awaiting] = None
     timed_steps: set[int] = field(default_factory=set)  # step numbers whose timer was started
     draft: Optional[RecipeDraft] = None
+    setup_pending: bool = False  # first-run question about allergies/conditions/diet is open
 
     # -- recipe lifecycle -------------------------------------------------
     def load_recipe(self, recipe: Recipe) -> None:
@@ -224,6 +225,8 @@ class CookingSession:
             })
             if self.recipe_source:
                 out["recipe_source"] = self.recipe_source
+        if self.setup_pending:
+            out["first_time_setup"] = "in progress: the app asked about allergies, conditions and diet"
         if self.awaiting:
             out["awaiting_answer_to"] = self.awaiting.value
         if self.timer_offer:

@@ -4,6 +4,7 @@
     chat      type instead of talking; real LLM and tools, replies printed (and spoken with --speak)
     demo      fully offline scripted session with fake providers (no keys, no audio hardware)
     recipes   manage the recipe book: add a recipe from a web page or file, list, show, remove
+    setup     first-time questions about allergies, conditions and diet (also asked by voice on first run)
     prefs     show or edit your saved preferences (diet, allergies, dislikes, pantry) and learned habits
     bench     end-to-end latency benchmark over recorded WAV fixtures
     diagnose  check audio devices, mic level, provider keys and connectivity
@@ -42,11 +43,14 @@ async def _run(args: argparse.Namespace) -> int:
     stt, llm, tts = make_stt(s), make_llm(s), make_tts(s)
     sink = SoundDeviceSink(device=args.output_device)
     store = open_recipe_store(s)
+    prefs = open_preferences(s)
     agent = CookingAgent(
         stt, llm, tts, sink,
         AgentConfig(wake_word=s.wake_word, barge_in=s.barge_in),
-        MetricsSink(s.metrics_path), on_text=_print_text, recipes=store, preferences=open_preferences(s),
+        MetricsSink(s.metrics_path), on_text=_print_text, recipes=store, preferences=prefs,
     )
+    if prefs.needs_setup():
+        agent.begin_setup()  # spoken as soon as the agent starts listening
     if hasattr(tts, "warmup"):
         with contextlib.suppress(Exception):
             await tts.warmup()
@@ -75,12 +79,16 @@ async def _chat(args: argparse.Namespace) -> int:
         tts, sink = ToneTTS(ms_per_char=0), SimulatedSink()
     from .providers.fake import QueueSTT
 
+    prefs = open_preferences(s)
     agent = CookingAgent(QueueSTT(), llm, tts, sink, AgentConfig(barge_in=False),
                          MetricsSink(s.metrics_path), on_text=_print_text, recipes=open_recipe_store(s),
-                         preferences=open_preferences(s))
+                         preferences=prefs)
     loop = asyncio.get_running_loop()
     timers_task = asyncio.create_task(agent._announcer())  # timer announcements in text mode
     print(f"text mode (llm={llm.name}). Type a message, empty line or Ctrl+D to quit.")
+    if prefs.needs_setup():
+        agent.begin_setup()
+        await asyncio.sleep(0)  # let the announcer print the question before we read input
     try:
         while not agent.stopped:
             line = await loop.run_in_executor(None, sys.stdin.readline)
@@ -155,6 +163,34 @@ def _print_recipe(rid: int, recipe) -> None:
         print(f"  {i}. {step.instruction}{timer}")
 
 
+# ------------------------------------------------------------------ setup
+SETUP_QUESTIONS = [
+    ("allergy", "Any food allergies? (e.g. peanuts, tree nuts, shellfish, eggs)"),
+    ("condition", "Any health conditions or intolerances that affect food? (e.g. lactose intolerance, "
+                  "celiac disease, diabetes, high blood pressure)"),
+    ("diet", "Do you follow a diet? (e.g. vegetarian, vegan, jain, halal)"),
+    ("dislike", "Anything you don't like to eat?"),
+    ("pantry", "Ingredients you usually have at home and like to cook with?"),
+]
+
+
+async def _setup(args: argparse.Namespace) -> int:
+    prefs = open_preferences(Settings.from_env())
+    print("First-time setup. Separate several answers with commas; press Enter to skip a question.")
+    print("Nothing here leaves your computer except as part of the recipe requests sent to the LLM.\n")
+    loop = asyncio.get_running_loop()
+    for category, question in SETUP_QUESTIONS:
+        print(question)
+        answer = await loop.run_in_executor(None, sys.stdin.readline)
+        for item in answer.split(","):
+            item = item.strip()
+            if item and item.lower() not in {"none", "no", "nothing", "n/a", "na"}:
+                prefs.remember(category, item)
+    prefs.mark_setup_done()
+    print()
+    return await _prefs(argparse.Namespace(action=None))
+
+
 # ------------------------------------------------------------------ prefs
 async def _prefs(args: argparse.Namespace) -> int:
     prefs = open_preferences(Settings.from_env())
@@ -172,7 +208,7 @@ async def _prefs(args: argparse.Namespace) -> int:
     learned = prefs.learned()
     print("stated preferences:" if stated else "stated preferences: none")
     for r in stated:
-        print(f"  {r['category']:<8} {r['value']}")
+        print(f"  {r['category']:<10} {r['value']}")
     print("learned from history:" if learned else "learned from history: nothing yet")
     for k, v in learned.items():
         print(f"  {k.replace('_', ' ')}: {', '.join(v) if isinstance(v, list) else v}")
@@ -292,10 +328,12 @@ def main(argv: list[str] | None = None) -> int:
     rr = rsub.add_parser("remove", help="delete one recipe")
     rr.add_argument("id", type=int)
 
+    sub.add_parser("setup", help="answer the first-time questions (allergies, conditions, diet) by typing")
+
     pf = sub.add_parser("prefs", help="show or edit what the assistant knows about you")
     psub = pf.add_subparsers(dest="action")
     pa = psub.add_parser("add", help="add a stated preference")
-    pa.add_argument("category", choices=["diet", "allergy", "dislike", "like", "pantry", "other"])
+    pa.add_argument("category", choices=["allergy", "condition", "diet", "dislike", "like", "pantry", "other"])
     pa.add_argument("value", nargs="+")
     pr = psub.add_parser("remove", help="remove stated preferences matching a phrase")
     pr.add_argument("value", nargs="+")
@@ -319,7 +357,7 @@ def main(argv: list[str] | None = None) -> int:
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     for noisy in ("httpx", "websockets", "google_genai"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
-    handler = {"run": _run, "chat": _chat, "demo": _demo, "bench": _bench, "recipes": _recipes, "prefs": _prefs,
+    handler = {"run": _run, "chat": _chat, "demo": _demo, "bench": _bench, "recipes": _recipes, "prefs": _prefs, "setup": _setup,
                "diagnose": _diagnose}[args.cmd]
     try:
         return asyncio.run(handler(args))

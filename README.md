@@ -62,6 +62,7 @@ cooking-agent run
 | `cooking-agent chat` | Type instead of talk, with the real LLM and tools. `--speak` also speaks replies. |
 | `cooking-agent demo` | Scripted offline session with fake providers: step pacing, a timer firing, a barge-in, dictating a recipe. |
 | `cooking-agent recipes add <url-or-file>` | Import a recipe into your recipe book. Also `recipes list [words]`, `recipes show <id>`, `recipes remove <id>`. |
+| `cooking-agent setup` | Answer the first-time questions (allergies, conditions, diet) by typing. The voice agent asks them on first run anyway. |
 | `cooking-agent prefs` | Show what it knows about you. `prefs add diet vegetarian`, `prefs remove mushrooms`, `prefs forget-history`. |
 | `cooking-agent bench` | End-to-end latency benchmark over WAV fixtures (see below). |
 | `cooking-agent diagnose` | Lists audio devices, measures mic level, checks keys and LLM connectivity. |
@@ -159,26 +160,52 @@ speech-recognition slips ("jeera rise") but not different words ("chickpea" ≠
 
 ## Your preferences
 
+The very first time you start `run` or `chat`, the assistant asks: *"Do you
+have any food allergies, or conditions like lactose intolerance, celiac disease
+or diabetes that I should keep in mind? And do you follow a diet?"* It saves
+what you say ("none" and "skip" are fine; if you don't answer, it asks again
+next time). `cooking-agent setup` asks the same by typing.
+
 The assistant keeps a small profile in the same local file and sends it to the
 LLM with each turn and each new recipe:
 
-* **What you tell it**, kept until you say otherwise: diet, allergies,
-  dislikes, likes, what you usually have at home. "I'm vegetarian." "I'm
-  allergic to cashews." "I always have paneer and ghee." "Forget that I don't
-  like mushrooms."
+* **What you tell it**, kept until you say otherwise: allergies, health
+  conditions and intolerances, diet, dislikes, likes, what you usually have at
+  home. "I'm lactose intolerant." "I'm allergic to cashews." "I'm vegetarian."
+  "I always have paneer and ghee." "Forget that I don't like mushrooms."
 * **What it learns**, from what you actually do: a diet you've asked for in
   most recent requests (at least 3 times), how many people you usually cook for
   (used when you don't say), and ingredients that appear in at least two
   recipes you actually started cooking.
 
-New recipes are written to fit: allergies are always excluded, your diet is
-followed, dislikes are left out, and ingredients you usually have are
-preferred. What you ask for in the moment wins ("chicken biryani, just this
-once"); allergies stay excluded from generated recipes, and the assistant is
-instructed to point out a known allergen if you ask for one. When it
-applied something it learned rather than something you said, it tells you.
-Recipes from your own book are never changed. `cooking-agent prefs` shows
-everything it knows; `prefs forget-history` clears what it learned.
+New recipes are written to fit: allergies are always excluded, health
+conditions are turned into concrete cooking rules (lactose intolerance: no
+milk, cream, paneer, yogurt, lactose-free or plant versions are fine; celiac:
+no wheat, maida, semolina, regular soy sauce...; diabetes: low added sugar and
+refined carbs; high blood pressure: low salt), your diet is followed, dislikes
+are left out, and ingredients you usually have are preferred, unless they
+clash with an allergy or condition. What you ask for in the moment wins for
+diet and taste ("chicken biryani, just this once"), never for allergies or
+conditions. When it applied something it learned rather than something you
+said, it tells you.
+
+**Safety check.** Every recipe's ingredients are also checked in code against
+your allergies and conditions, with common families (tree nuts, shellfish,
+dairy, gluten...) and look-alikes that are fine (coconut milk, rice flour,
+nutmeg, eggplant):
+
+* a generated recipe that still contains something you can't have is sent back
+  once to be rewritten; if it still conflicts, you get a spoken warning;
+* recipes from your own book are never changed, but you're warned ("Heads up:
+  this has milk, which conflicts with lactose intolerance");
+* a substitution into something you can't have is flagged.
+
+This is a helper, not a medical guarantee: word matching can't see hidden
+ingredients in branded products, and the guidance for conditions like
+diabetes is general. Always check labels.
+
+`cooking-agent prefs` shows everything it knows; `prefs forget-history` clears
+what it learned.
 
 ## Latency
 
@@ -253,7 +280,8 @@ src/cooking_agent/
   recipe.py       recipe schema; parsing quantities, durations and ingredient lines
   recipe_store.py recipe book (SQLite) and search
   recipe_import.py  import from web pages (schema.org JSON-LD) and files
-  preferences.py  stated preferences and learned habits
+  preferences.py  stated preferences, learned habits, first-run setup flag
+  dietary.py      ingredient checks against allergies and health conditions
   timers.py       concurrent named asyncio timers
   segmenter.py    split streaming text into speakable sentences
   audio.py        mic / WAV sources, speaker sinks, MicGate

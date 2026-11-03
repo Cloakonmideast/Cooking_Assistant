@@ -118,6 +118,6 @@ def test_cli_prefs(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("RECIPE_DB", str(tmp_path / "book.db"))
     assert main(["prefs", "add", "pantry", "paneer"]) == 0
     assert main(["prefs"]) == 0
-    assert "pantry   paneer" in capsys.readouterr().out
+    assert "pantry     paneer" in capsys.readouterr().out
     assert main(["prefs", "remove", "paneer"]) == 0
     assert main(["prefs", "remove", "paneer"]) == 1

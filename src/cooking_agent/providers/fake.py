@@ -139,7 +139,12 @@ class ScriptedLLM:
             return f"Cancelled the {result['cancelled']} timer."
         if name == "get_recipe":
             where = " from your recipe book" if result.get("source") == "your recipe book" else ""
-            return f"I found {result['title']}{where}. It has {result['step_count']} steps."
+            heads_up = f"Heads up: it {'; '.join(result['warnings'])}. " if result.get("warnings") else ""
+            return f"{heads_up}I found {result['title']}{where}. It has {result['step_count']} steps."
+        if name == "remember_preference":
+            return f"Got it, I'll remember {result['remembered']}."
+        if name == "finish_setup":
+            return "All set, you can change that any time. What would you like to cook?"
         if name == "start_step_timer":
             return f"Okay, {result['name']} timer started for {result['duration']}."
         if name == "save_dictated_recipe":

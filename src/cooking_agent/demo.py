@@ -11,6 +11,7 @@ from .metrics import MetricsSink
 from .providers.base import ToolCall
 from .providers.fake import QueueSTT, ScriptedLLM, ToneTTS
 from .recipe import Recipe
+from .preferences import PreferenceStore
 from .recipe_store import RecipeStore
 
 DEMO_RECIPE = Recipe.model_validate({
@@ -36,6 +37,8 @@ def demo_llm() -> ScriptedLLM:
     return ScriptedLLM(
         recipe=DEMO_RECIPE,
         script={
+            "lactose": [ToolCall("remember_preference", {"category": "condition", "value": "lactose intolerance"}),
+                        ToolCall("finish_setup", {})],
             "kheer for four": ["Let me check.", ToolCall("get_recipe", {"dish": "kheer", "servings": 4})],
             "save my own": [ToolCall("start_recipe_dictation", {"title": "Grandma's Kheer", "servings": 2})],
             "recipe": ["Sure, let me find one.", ToolCall("get_recipe", {"dish": "egg fried rice", "servings": 2})],
@@ -63,8 +66,15 @@ async def run_demo() -> None:
     tts = ToneTTS()
     agent = CookingAgent(QueueSTT(), demo_llm(), tts, sink, AgentConfig(), MetricsSink(),
                          on_text=lambda who, t: print(f"[{'you' if who == 'user' else 'assistant'}] {t}"),
-                         recipes=RecipeStore(":memory:"))
+                         recipes=RecipeStore(":memory:"), preferences=PreferenceStore(":memory:"))
     announcer = asyncio.create_task(agent._announcer())
+    print("-- first run: the assistant asks about allergies and conditions --")
+    agent.begin_setup()
+    await asyncio.sleep(0.05)
+    while agent._output:
+        await asyncio.sleep(0.05)
+    await agent.submit_text("I'm lactose intolerant, no other allergies")
+    print("-- cooking --")
     for line in ["find me a fried rice recipe", "next step", "not yet", "ready", "ready",
                  "set a rice timer for a few seconds", "say it again"]:
         await agent.submit_text(line)

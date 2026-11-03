@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from .providers.base import LLMProvider, ToolCall, ToolResult, ToolSpec
 from .recipe import Ingredient, Recipe, Step, format_minutes, parse_ingredient_line
+from .dietary import find_conflicts
 from .preferences import CATEGORIES, PreferenceStore, describe_for_recipe
 from .recipe_store import RecipeStore
 from .state import Awaiting, CookingPhase, CookingSession, InvalidTransition, RecipeDraft
@@ -86,10 +87,16 @@ class DraftRemoveArgs(BaseModel):
 
 class RememberArgs(BaseModel):
     category: Literal[CATEGORIES] = Field(description=(  # type: ignore[valid-type]
-        "diet (vegetarian, vegan, ...), allergy, dislike (ingredient or food they avoid), like (flavours, "
-        "cuisines, spice level), pantry (ingredients they usually have), other."))
-    value: str = Field(min_length=1, description="Short phrase, e.g. 'vegetarian', 'peanuts', 'mushrooms', "
-                       "'spicy food', 'paneer'.")
+        "allergy (a food they react to), condition (health condition or intolerance that affects food, e.g. "
+        "lactose intolerance, celiac disease, diabetes, high blood pressure), diet (vegetarian, vegan, ...), "
+        "dislike (ingredient or food they avoid), like (flavours, cuisines, spice level), pantry (ingredients "
+        "they usually have), other."))
+    value: str = Field(min_length=1, description="Short phrase, e.g. 'peanuts', 'lactose intolerance', "
+                       "'vegetarian', 'mushrooms', 'spicy food', 'paneer'.")
+
+
+class FinishSetupArgs(BaseModel):
+    skipped: bool = Field(default=False, description="True if the cook chose to skip the setup question.")
 
 
 class ForgetArgs(BaseModel):
@@ -249,6 +256,9 @@ class ToolBox:
                  "Not for one-off requests like 'no onions today'.", RememberArgs, self._wrap(self._remember)),
             Tool("forget_preference", "Forget a preference the cook no longer has.",
                  ForgetArgs, self._wrap(self._forget)),
+            Tool("finish_setup", "Finish the first-time setup after saving what the cook said about allergies, "
+                 "conditions and diet (or after they said none, or asked to skip).",
+                 FinishSetupArgs, self._wrap(self._finish_setup)),
             Tool("get_preferences", "What is known about the cook: stated preferences and learned habits.",
                  NoArgs, self._wrap(lambda _: self._profile() or {"note": "Nothing known yet."})),
             Tool("previous_step", "Go back one step and return it.",
@@ -291,6 +301,8 @@ class ToolBox:
             if servings and servings != saved.recipe.servings:
                 self.session.scale_servings(servings)
             out = self._recipe_summary(saved.recipe) | {"source": "your recipe book"}
+            if warnings := self._warnings(saved.recipe):
+                out["warnings"] = warnings  # their own recipe: warn, never change it silently
         else:
             profile = self._profile()
             prompt = RECIPE_PROMPT.format(
@@ -299,17 +311,54 @@ class ToolBox:
                 constraints=f"Constraints: {a.constraints}.\n" if a.constraints else "",
                 profile=describe_for_recipe(profile),
             )
-            recipe = await self.llm.generate_structured(prompt, Recipe)
+            recipe, warnings = await self._write_recipe(prompt)
             self._loaded(recipe, "generated", request_id)
             if servings and servings != recipe.servings:  # the model ignored the requested servings
                 self.session.scale_servings(servings)
             out = self._recipe_summary(recipe) | {"source": "newly written, not from the recipe book"}
+            if warnings:
+                out["warnings"] = warnings
             applied = self._applied(profile)
             if applied:
                 out["tailored_to"] = applied
         if servings_learned:
             out["servings_note"] = f"made for {servings}, the number you usually cook for"
         return out
+
+    async def _write_recipe(self, prompt: str) -> tuple[Recipe, list[str]]:
+        """Have the LLM write a recipe; if it includes something the cook's
+        allergies or conditions rule out, send it back once to fix."""
+        recipe = await self.llm.generate_structured(prompt, Recipe)
+        conflicts = self._conflicts([i.name for i in recipe.ingredients])
+        if not conflicts:
+            return recipe, []
+        log.warning("generated recipe conflicts with the cook's profile: %s", [c.message() for c in conflicts])
+        retry = (f"{prompt}\nYour previous version included "
+                 f"{'; '.join(c.message() for c in conflicts)}. This cook must not have these. "
+                 "Rewrite the whole recipe without them, using safe substitutes.")
+        recipe = await self.llm.generate_structured(retry, Recipe)
+        conflicts = self._conflicts([i.name for i in recipe.ingredients])
+        return recipe, [self._warning_text(c) for c in conflicts]
+
+    def _conflicts(self, names: list[str]):
+        p = self._profile()
+        if not (p.get("allergy") or p.get("condition")):
+            return []
+        return find_conflicts(names, allergies=p.get("allergy", []), conditions=p.get("condition", []))
+
+    @staticmethod
+    def _warning_text(c) -> str:
+        return f"contains {c.message()}"
+
+    def _warnings(self, recipe: Recipe) -> list[str]:
+        return [self._warning_text(c) for c in self._conflicts([i.name for i in recipe.ingredients])]
+
+    def _finish_setup(self, a: FinishSetupArgs) -> dict:
+        if self.prefs is None:
+            raise InvalidTransition("I can't store preferences right now.")
+        self.prefs.mark_setup_done(skipped=a.skipped)
+        self.session.setup_pending = False
+        return {"setup_done": True, "skipped": a.skipped, "profile": self.prefs.profile()}
 
     def _loaded(self, recipe: Recipe, source: str, request_id: Optional[int]) -> None:
         self.session.load_recipe(recipe)
@@ -324,6 +373,7 @@ class ToolBox:
     def _applied(profile: dict) -> list[str]:
         """Short notes on what shaped a generated recipe, for the assistant to mention."""
         out = [f"no {a} (allergy)" for a in profile.get("allergy", [])]
+        out += [f"suitable for {c}" for c in profile.get("condition", [])]
         out += profile.get("diet", [])
         out += [f"no {d}" for d in profile.get("dislike", [])]
         learned = profile.get("learned_from_history", {})
@@ -462,7 +512,10 @@ class ToolBox:
 
     def _substitute(self, a: SubstituteArgs) -> dict:
         repl = Ingredient(name=a.replacement, quantity=a.quantity, unit=a.unit, note=a.note)
-        return self.session.substitute(a.ingredient, repl)
+        out = self.session.substitute(a.ingredient, repl)
+        if conflicts := self._conflicts([a.replacement]):
+            out["warnings"] = [self._warning_text(c) for c in conflicts]
+        return out
 
     async def _end_session(self, _: NoArgs) -> dict:
         self.end_requested = True

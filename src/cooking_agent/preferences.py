@@ -27,7 +27,9 @@ import time
 from pathlib import Path
 from typing import Optional
 
-CATEGORIES = ("diet", "allergy", "dislike", "like", "pantry", "other")
+from .dietary import condition_hint, find_conflicts
+
+CATEGORIES = ("allergy", "condition", "diet", "dislike", "like", "pantry", "other")
 
 # Constraint words that describe a diet, for spotting a habit in requests.
 DIET_WORDS = {
@@ -78,6 +80,7 @@ class PreferenceStore:
             " servings INTEGER, title TEXT, cooked INTEGER NOT NULL DEFAULT 0, ts REAL NOT NULL);"
             "CREATE TABLE IF NOT EXISTS ingredient_use ("
             " name TEXT PRIMARY KEY, recipes INTEGER NOT NULL DEFAULT 0, last_ts REAL NOT NULL);"
+            "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
         )
         self._db.commit()
 
@@ -110,6 +113,21 @@ class PreferenceStore:
     def stated(self) -> list[dict]:
         rows = self._db.execute("SELECT id, category, value FROM preferences ORDER BY category, added_at")
         return [{"id": i, "category": c, "value": v} for i, c, v in rows]
+
+    # -- first-run setup -----------------------------------------------------
+    def needs_setup(self) -> bool:
+        """True until the cook has answered (or skipped) the first-run
+        question about allergies, conditions and diet."""
+        return self._db.execute("SELECT 1 FROM meta WHERE key = 'setup_done'").fetchone() is None
+
+    def mark_setup_done(self, skipped: bool = False) -> None:
+        self._db.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('setup_done', ?)",
+                         ("skipped" if skipped else str(time.time()),))
+        self._db.commit()
+
+    def reset_setup(self) -> None:
+        self._db.execute("DELETE FROM meta WHERE key = 'setup_done'")
+        self._db.commit()
 
     # -- learning ------------------------------------------------------------
     def record_request(self, dish: str, constraints: Optional[str], servings: Optional[int]) -> int:
@@ -183,24 +201,34 @@ def describe_for_recipe(profile: dict) -> str:
     """Instructions for the recipe writer, built from ``profile()``."""
     if not profile:
         return ""
+
+    def safe(items: list[str]) -> list[str]:
+        # never tell the writer to prefer something the cook can't have ('paneer' + lactose intolerance)
+        bad = {c.ingredient for c in find_conflicts(items, profile.get("allergy", []), profile.get("condition", []))}
+        return [i for i in items if i not in bad]
+
     lines = []
     if profile.get("allergy"):
         lines.append(f"- ALLERGIES, never include, not even as garnish or optional: {', '.join(profile['allergy'])}.")
+    if profile.get("condition"):
+        lines.append("- HEALTH CONDITIONS, treat as strict rules for every ingredient: "
+                     + "; ".join(condition_hint(c) for c in profile["condition"]) + ".")
     if profile.get("diet"):
         lines.append(f"- Diet: {', '.join(profile['diet'])}.")
     if profile.get("dislike"):
         lines.append(f"- Leave out (dislikes): {', '.join(profile['dislike'])}.")
     if profile.get("like"):
         lines.append(f"- Likes: {', '.join(profile['like'])}.")
-    if profile.get("pantry"):
-        lines.append(f"- Usually has at home, prefer these where they fit: {', '.join(profile['pantry'])}.")
+    if pantry := safe(profile.get("pantry", [])):
+        lines.append(f"- Usually has at home, prefer these where they fit: {', '.join(pantry)}.")
     if profile.get("other"):
         lines.append(f"- Also: {'; '.join(profile['other'])}.")
     learned = profile.get("learned_from_history", {})
     if learned.get("usually_asks_for"):
         lines.append(f"- Usually asks for {', '.join(learned['usually_asks_for'])} recipes; follow that "
                      "unless the request says otherwise.")
-    if learned.get("often_cooks_with"):
-        lines.append(f"- Often cooks with: {', '.join(learned['often_cooks_with'])}; use them where natural.")
-    return ("About this cook (the request itself wins where it conflicts, except allergies):\n"
+    if often := safe(learned.get("often_cooks_with", [])):
+        lines.append(f"- Often cooks with: {', '.join(often)}; use them where natural.")
+    return ("About this cook (the request itself wins where it conflicts, except allergies and health "
+            "conditions):\n"
             + "\n".join(lines) + "\n")
