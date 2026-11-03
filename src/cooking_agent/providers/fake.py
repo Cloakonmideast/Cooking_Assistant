@@ -94,6 +94,7 @@ class ScriptedLLM:
     delay_s: float = 0.0
     first_token_delay_s: float = 0.0
     calls: list[list[Message]] = field(default_factory=list)
+    prompts: list[str] = field(default_factory=list)  # generate_structured prompts, for tests
 
     async def stream(self, system: str, history: list[Message], tools: list[ToolSpec]) -> AsyncIterator[LLMEvent]:
         self.calls.append(list(history))
@@ -137,12 +138,22 @@ class ScriptedLLM:
         if name == "cancel_timer":
             return f"Cancelled the {result['cancelled']} timer."
         if name == "get_recipe":
-            return f"I found {result['title']}. It has {result['step_count']} steps."
+            where = " from your recipe book" if result.get("source") == "your recipe book" else ""
+            return f"I found {result['title']}{where}. It has {result['step_count']} steps."
+        if name == "start_step_timer":
+            return f"Okay, {result['name']} timer started for {result['duration']}."
+        if name == "save_dictated_recipe":
+            return f"Saved {result['saved']} to your recipe book."
+        if name == "start_recipe_dictation":
+            return f"Okay, go ahead with {result['started']}."
+        if name == "add_to_dictated_recipe":
+            return "Got it."
         if name == "end_session":
             return "Goodbye, happy cooking!"
         return "Done."
 
     async def generate_structured(self, prompt: str, schema: Type[M]) -> M:
+        self.prompts.append(prompt)
         if self.recipe is None:
             raise RuntimeError("ScriptedLLM has no recipe configured")
         if isinstance(self.recipe, schema):

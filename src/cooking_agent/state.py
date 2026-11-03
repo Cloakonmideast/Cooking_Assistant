@@ -16,7 +16,7 @@ import enum
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-from .recipe import Ingredient, Recipe
+from .recipe import Ingredient, Recipe, Step, format_minutes
 
 
 class InvalidTransition(RuntimeError):
@@ -37,6 +37,41 @@ class CookingPhase(str, enum.Enum):
     DONE = "done"
 
 
+class Awaiting(str, enum.Enum):
+    """The yes/no question the assistant last asked after a step, so a bare
+    "yes" from the cook can be routed to the right tool."""
+
+    TIMER = "start_timer"  # "Do you want me to start a timer for 12 minutes?"
+    NEXT_STEP = "next_step"  # "Are you ready for the next step?"
+
+
+@dataclass
+class RecipeDraft:
+    """A recipe the cook is dictating by voice, built up across turns."""
+
+    title: str
+    servings: Optional[int] = None
+    ingredients: list[Ingredient] = field(default_factory=list)
+    steps: list[Step] = field(default_factory=list)
+
+    def summary(self) -> dict:
+        return {
+            "title": self.title,
+            "servings": self.servings,
+            "ingredients": [i.describe() for i in self.ingredients],
+            "steps": [s.instruction for s in self.steps],
+        }
+
+    def to_recipe(self) -> Recipe:
+        missing = [what for what, ok in (("how many people it serves", self.servings),
+                                         ("any ingredients", self.ingredients),
+                                         ("any steps", self.steps)) if not ok]
+        if missing:
+            raise InvalidTransition(f"The recipe doesn't have {' or '.join(missing)} yet.")
+        return Recipe(title=self.title, servings=self.servings, ingredients=list(self.ingredients),
+                      steps=list(self.steps))
+
+
 @dataclass
 class CookingSession:
     recipe: Optional[Recipe] = None
@@ -44,6 +79,12 @@ class CookingSession:
     step_index: int = -1
     target_servings: Optional[int] = None
     substitutions: list[dict] = field(default_factory=list)
+    recipe_source: Optional[str] = None  # 'recipe book' or 'generated'
+    # Step timer the cook has been offered for the current step: {"minutes", "step_number"}.
+    timer_offer: Optional[dict] = None
+    awaiting: Optional[Awaiting] = None
+    timed_steps: set[int] = field(default_factory=set)  # step numbers whose timer was started
+    draft: Optional[RecipeDraft] = None
 
     # -- recipe lifecycle -------------------------------------------------
     def load_recipe(self, recipe: Recipe) -> None:
@@ -52,6 +93,9 @@ class CookingSession:
         self.step_index = -1
         self.target_servings = recipe.servings
         self.substitutions = []
+        self.timer_offer = None
+        self.awaiting = None
+        self.timed_steps = set()
 
     def _require_recipe(self) -> Recipe:
         if self.recipe is None:
@@ -70,6 +114,8 @@ class CookingSession:
             raise InvalidTransition("You've already finished the last step.")
         if self.step_index + 1 >= len(recipe.steps):
             self.phase = CookingPhase.DONE
+            self.timer_offer = None
+            self.awaiting = None
             return {"finished": True, "message": "That was the last step."}
         self.step_index += 1
         self.phase = CookingPhase.COOKING
@@ -99,9 +145,26 @@ class CookingSession:
             "instruction": step.instruction,
             "is_last_step": self.step_index == len(recipe.steps) - 1,
         }
-        if step.timer_minutes:
+        if step.timer_minutes and (self.step_index + 1) not in self.timed_steps:
             out["suggested_timer_minutes"] = step.timer_minutes
+            self.timer_offer = {"minutes": step.timer_minutes, "step_number": self.step_index + 1}
+        else:
+            self.timer_offer = None
         return out
+
+    def take_timer_offer(self) -> dict:
+        """The current step's timer, for start_step_timer. Raises if there is none."""
+        self._require_recipe()
+        if self.phase != CookingPhase.COOKING or not self.timer_offer:
+            raise InvalidTransition("The current step doesn't have a time to set a timer for. "
+                                    "You can still ask for a timer with a number of minutes.")
+        offer, self.timer_offer = self.timer_offer, None
+        self.timed_steps.add(offer["step_number"])
+        return offer
+
+    @property
+    def on_last_step(self) -> bool:
+        return self.recipe is not None and self.step_index == len(self.recipe.steps) - 1
 
     # -- ingredients ------------------------------------------------------
     def ingredient_lines(self) -> list[str]:
@@ -151,15 +214,25 @@ class CookingSession:
 
     def snapshot(self) -> dict:
         """Compact state summary given to the LLM each turn."""
-        if self.recipe is None:
-            return {"phase": self.phase.value}
-        return {
-            "phase": self.phase.value,
-            "recipe": self.recipe.title,
-            "servings": self.target_servings,
-            "step": (self.step_index + 1) if self.step_index >= 0 else None,
-            "total_steps": len(self.recipe.steps),
-        }
+        out: dict = {"phase": self.phase.value}
+        if self.recipe is not None:
+            out.update({
+                "recipe": self.recipe.title,
+                "servings": self.target_servings,
+                "step": (self.step_index + 1) if self.step_index >= 0 else None,
+                "total_steps": len(self.recipe.steps),
+            })
+            if self.recipe_source:
+                out["recipe_source"] = self.recipe_source
+        if self.awaiting:
+            out["awaiting_answer_to"] = self.awaiting.value
+        if self.timer_offer:
+            out["current_step_timer"] = format_minutes(self.timer_offer["minutes"])
+        if self.draft is not None:
+            d = self.draft
+            out["dictating_recipe"] = {"title": d.title, "servings": d.servings,
+                                       "ingredients": len(d.ingredients), "steps": len(d.steps)}
+        return out
 
 
 # --------------------------------------------------------------------------

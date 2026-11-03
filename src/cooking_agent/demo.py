@@ -11,6 +11,7 @@ from .metrics import MetricsSink
 from .providers.base import ToolCall
 from .providers.fake import QueueSTT, ScriptedLLM, ToneTTS
 from .recipe import Recipe
+from .recipe_store import RecipeStore
 
 DEMO_RECIPE = Recipe.model_validate({
     "title": "Simple Egg Fried Rice",
@@ -35,8 +36,17 @@ def demo_llm() -> ScriptedLLM:
     return ScriptedLLM(
         recipe=DEMO_RECIPE,
         script={
+            "kheer for four": ["Let me check.", ToolCall("get_recipe", {"dish": "kheer", "servings": 4})],
+            "save my own": [ToolCall("start_recipe_dictation", {"title": "Grandma's Kheer", "servings": 2})],
             "recipe": ["Sure, let me find one.", ToolCall("get_recipe", {"dish": "egg fried rice", "servings": 2})],
+            "litre": [ToolCall("add_to_dictated_recipe", {"ingredients": ["1 litre milk", "1/4 cup rice, washed",
+                                                                           "3 tbsp sugar"]})],
+            "boil": [ToolCall("add_to_dictated_recipe", {"steps": [
+                "Boil the milk.", "Add the rice and simmer for 40 minutes, stirring often.", "Stir in the sugar."]})],
+            "save it": [ToolCall("save_dictated_recipe", {})],
+            "not yet": ["No problem, take your time."],
             "next": [ToolCall("next_step", {})],
+            "ready": [ToolCall("next_step", {})],
             "back": [ToolCall("previous_step", {})],
             "again": [ToolCall("repeat_step", {})],
             "stop the": [ToolCall("cancel_timer", {"name": "rice"})],
@@ -52,10 +62,11 @@ async def run_demo() -> None:
     sink = SimulatedSink(realtime=True, speed=10)  # 10x real time so the demo is quick
     tts = ToneTTS()
     agent = CookingAgent(QueueSTT(), demo_llm(), tts, sink, AgentConfig(), MetricsSink(),
-                         on_text=lambda who, t: print(f"[{'you' if who == 'user' else 'assistant'}] {t}"))
+                         on_text=lambda who, t: print(f"[{'you' if who == 'user' else 'assistant'}] {t}"),
+                         recipes=RecipeStore(":memory:"))
     announcer = asyncio.create_task(agent._announcer())
-    for line in ["find me a fried rice recipe", "next step", "next step", "next", "set a rice timer",
-                 "say it again"]:
+    for line in ["find me a fried rice recipe", "next step", "not yet", "ready", "ready",
+                 "set a rice timer for a few seconds", "say it again"]:
         await agent.submit_text(line)
     await asyncio.sleep(1.5)  # rice timer (1.2 s) fires while idle -> standalone announcement
     while agent._output:
@@ -66,6 +77,12 @@ async def run_demo() -> None:
     agent.barge_in()
     await asyncio.gather(task, return_exceptions=True)
     await agent.submit_text("go back")
+    print("-- dictating a recipe, then cooking it from the recipe book --")
+    for line in ["I want to save my own recipe", "1 litre milk, a quarter cup of rice, 3 tbsp sugar",
+                 "boil the milk, add the rice and simmer for 40 minutes, then stir in the sugar", "save it",
+                 "make the kheer for four", "ready"]:
+        await agent.submit_text(line)
+    print("   ingredients for 4:", "; ".join(agent.session.ingredient_lines()))
     await agent.submit_text("bye")
     announcer.cancel()
     await agent.timers.aclose()

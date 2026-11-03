@@ -1,9 +1,13 @@
 # Cooking Assistant
 
 A hands-free, real-time voice agent that cooks with you. Ask for a recipe, then
-walk through it by voice: next step, go back, what's in it, scale it for six,
-swap an ingredient, run several timers at once. You can talk over it to
-interrupt, and timers announce themselves even mid-sentence.
+walk through it by voice at your own pace: after every step it offers a timer
+for the time the step states and asks if you're ready to move on. Scale it for
+six, swap an ingredient, run several timers at once. Keep your own recipe book
+(import from a web page, a file, or just dictate a recipe), and it learns your
+preferences (vegetarian, allergies, what you usually have at home) and tailors
+new recipes to them. You can talk over it to interrupt, and timers announce
+themselves even mid-sentence.
 
 ```
 mic ─► MicGate ─► STT (streaming) ──final──► LLM (streaming + tools) ─► sentence
@@ -56,7 +60,9 @@ cooking-agent run
 |---|---|
 | `cooking-agent run` | Live voice agent (mic + speakers). `--wake-word chef` to require a wake word, `--no-barge-in` to disable interrupting. |
 | `cooking-agent chat` | Type instead of talk, with the real LLM and tools. `--speak` also speaks replies. |
-| `cooking-agent demo` | Scripted offline session with fake providers: tools, a timer firing, a barge-in. |
+| `cooking-agent demo` | Scripted offline session with fake providers: step pacing, a timer firing, a barge-in, dictating a recipe. |
+| `cooking-agent recipes add <url-or-file>` | Import a recipe into your recipe book. Also `recipes list [words]`, `recipes show <id>`, `recipes remove <id>`. |
+| `cooking-agent prefs` | Show what it knows about you. `prefs add diet vegetarian`, `prefs remove mushrooms`, `prefs forget-history`. |
 | `cooking-agent bench` | End-to-end latency benchmark over WAV fixtures (see below). |
 | `cooking-agent diagnose` | Lists audio devices, measures mic level, checks keys and LLM connectivity. |
 
@@ -80,17 +86,99 @@ offline ones: `pip install -e ".[offline]"`. All settings are listed in
 
 | Tool | Example |
 |---|---|
-| `get_recipe` | "Find me a recipe for jeera rice, vegan, for four." |
-| `next_step` / `previous_step` / `repeat_step` | "Next." "Go back one." "Say that again." |
+| `get_recipe` | "Find me a recipe for jeera rice, vegan, for four." (your recipe book first) |
+| `next_step` / `previous_step` / `repeat_step` | "Yes, ready." "Go back one." "Say that again." |
+| `start_step_timer` | "Yes" to "Do you want me to start a timer for 12 minutes?" |
 | `list_ingredients` | "What do I need?" |
 | `scale_servings` | "Make it for six people." |
 | `substitute_ingredient` | "I don't have ghee, what can I use?" |
 | `set_timer` / `cancel_timer` / `list_timers` | "Set a rice timer for 12 minutes." "How long is left?" "Stop the pasta timer." |
+| `list_saved_recipes` / `save_recipe` | "What recipes do I have?" "Save this one." |
+| `start_recipe_dictation` and friends | "I want to save my own recipe, Mum's dal, serves four." |
+| `remember_preference` / `forget_preference` / `get_preferences` | "I'm vegetarian." "I'm allergic to peanuts." "Forget that I don't like mushrooms." |
 | `end_session` | "That's all, thanks, bye." |
 
 Recipes are generated with a pydantic schema as the LLM's structured-output
 schema and validated on return (quantities, units, per-step timer hints), so
 scaling and substitution work on real numbers rather than on free text.
+
+## Cooking at your pace
+
+The assistant never moves on by itself. After reading a step:
+
+* if the step states a time ("simmer for 10 to 12 minutes"), it asks **"Do you
+  want me to start a timer for 10 minutes?"** (a range uses the lower bound, so
+  you check early). Say yes, or ask for a different length;
+* then, or straight away for steps without a time, it asks **"Are you ready for
+  the next step?"** and waits. "Not yet" is fine; it won't nag.
+
+These questions are added by the app, not left to the model, so they come
+every time in the same words, and the app remembers which question is open so
+a plain "yes" does the right thing. Times are read from the step text when a
+recipe doesn't mark them, so imported and dictated recipes get timers too.
+
+## Your recipe book
+
+`get_recipe` looks in your recipe book first and only asks the LLM to write a
+recipe when there's no match. Saved recipes are read back exactly as stored and
+scaled to however many people you're cooking for. The book is a local SQLite
+file (`RECIPE_DB`, default `~/.cooking-agent/recipes.db`). Ways to fill it:
+
+* **From a web page:** `cooking-agent recipes add https://...`. Most recipe
+  sites embed the recipe in a standard machine-readable form (schema.org); the
+  title, servings, ingredient lines and steps are taken from it as published.
+  Some sites block automated downloads; then save the page's recipe into a file.
+* **From a file you write:**
+
+  ```markdown
+  # Mum's Dal
+  Serves: 4
+
+  ## Ingredients
+  - 1 cup toor dal, rinsed
+  - 1/2 tsp turmeric
+  - Salt to taste
+
+  ## Steps
+  1. Pressure cook the dal with 3 cups of water for 15 minutes.
+  2. Temper cumin in ghee and pour over.
+  ```
+
+  then `cooking-agent recipes add dal.md` (JSON in the app's recipe schema works too).
+* **By voice:** "I want to save my own recipe, Mum's dal, serves four." Then
+  read out ingredients and steps in any order and as many turns as you like; it
+  answers "Got it." Fix mistakes ("remove step three"), ask it to read the
+  draft back, and say "that's it, save it".
+* **A generated recipe you liked:** "Save this recipe."
+
+Ingredient lines like "1½ cups basmati rice, rinsed" are parsed into quantity,
+unit, name and note so scaling works; lines without an amount ("salt to
+taste") are kept as written and never scaled. Search tolerates small
+speech-recognition slips ("jeera rise") but not different words ("chickpea" ≠
+"chicken").
+
+## Your preferences
+
+The assistant keeps a small profile in the same local file and sends it to the
+LLM with each turn and each new recipe:
+
+* **What you tell it**, kept until you say otherwise: diet, allergies,
+  dislikes, likes, what you usually have at home. "I'm vegetarian." "I'm
+  allergic to cashews." "I always have paneer and ghee." "Forget that I don't
+  like mushrooms."
+* **What it learns**, from what you actually do: a diet you've asked for in
+  most recent requests (at least 3 times), how many people you usually cook for
+  (used when you don't say), and ingredients that appear in at least two
+  recipes you actually started cooking.
+
+New recipes are written to fit: allergies are always excluded, your diet is
+followed, dislikes are left out, and ingredients you usually have are
+preferred. What you ask for in the moment wins ("chicken biryani, just this
+once"); allergies stay excluded from generated recipes, and the assistant is
+instructed to point out a known allergen if you ask for one. When it
+applied something it learned rather than something you said, it tells you.
+Recipes from your own book are never changed. `cooking-agent prefs` shows
+everything it knows; `prefs forget-history` clears what it learned.
 
 ## Latency
 
@@ -160,9 +248,12 @@ so they need no keys, network or audio hardware.
 ```
 src/cooking_agent/
   agent.py        turn loop: STT finals -> LLM rounds + tools -> segments -> TTS -> speaker; barge-in
-  state.py        cooking-session and turn state machines
-  tools.py        tool schemas (pydantic) and dispatcher
-  recipe.py       recipe schema, quantity formatting
+  state.py        cooking-session and turn state machines, open question, dictation draft
+  tools.py        tool schemas (pydantic), dispatcher, follow-up questions after steps
+  recipe.py       recipe schema; parsing quantities, durations and ingredient lines
+  recipe_store.py recipe book (SQLite) and search
+  recipe_import.py  import from web pages (schema.org JSON-LD) and files
+  preferences.py  stated preferences and learned habits
   timers.py       concurrent named asyncio timers
   segmenter.py    split streaming text into speakable sentences
   audio.py        mic / WAV sources, speaker sinks, MicGate

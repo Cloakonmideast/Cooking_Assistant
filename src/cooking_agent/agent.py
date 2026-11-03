@@ -38,9 +38,12 @@ from .providers.base import (
     SttEvent,
     TextDelta,
     ToolCallEvent,
+    ToolResult,
     TTSProvider,
     TurnComplete,
 )
+from .preferences import PreferenceStore
+from .recipe_store import RecipeStore
 from .segmenter import SentenceSegmenter
 from .state import CookingSession, TurnState, TurnStateMachine
 from .timers import TimerManager
@@ -57,17 +60,54 @@ Speaking style:
 lists, emojis or symbols.
 - When reading a step, say the step number and the instruction. Do not read \
 ahead unless asked.
+- After reading a step or starting a step timer, do NOT ask a follow-up \
+question: the app itself asks "Do you want me to start a timer for N minutes?" \
+or "Are you ready for the next step?" right after your reply.
 - When listing ingredients, read at most six at a time and offer the rest.
 
-Tools:
-- Use tools for anything that reads or changes the recipe, step position or \
-timers. Never invent a step or quantity: get it from a tool result.
-- Before calling get_recipe, say one short sentence first (for example \
-"Sure, let me find a recipe for that."), because it takes a few seconds.
-- If a step has suggested_timer_minutes, offer to start a timer; do not start \
-one unless asked.
+Steps and timers:
+- The cook moves on only when they say so. Never call next_step on your own.
+- awaiting_answer_to in the state says which question the app just asked. \
+If it is start_timer and the cook agrees ("yes", "sure", "go ahead"), call \
+start_step_timer. If it is next_step and the cook agrees ("yes", "ready", \
+"done"), call next_step. If they say no or not yet, reply briefly (e.g. "No \
+problem, take your time.") and call nothing.
+- For a timer with a different length than the step's, use set_timer.
 - "Stop" or "cancel" about a timer means cancel_timer, never end_session. \
 Only call end_session if the cook clearly wants to quit the assistant.
+
+Recipes:
+- get_recipe checks the cook's saved recipe book first, then writes a new \
+recipe. Pass servings when the cook says how many people. Mention whether \
+the recipe came from their recipe book.
+- Before calling get_recipe, say one short sentence first (for example \
+"Sure, let me find a recipe for that."), because it can take a few seconds.
+- The cook can save the current recipe (save_recipe) or dictate their own. \
+For dictation: start_recipe_dictation with the title (ask for it if not \
+given); then, every time the cook dictates, call add_to_dictated_recipe with \
+exactly what they said, as ingredient lines and/or steps, and answer in two \
+or three words ("Got it." / "Okay, next?"). Ask how many people it serves if \
+they haven't said. Fix mistakes with remove_from_dictated_recipe. When they \
+say they are done, call read_dictated_recipe, read back the title and the \
+number of ingredients and steps, and ask if you should save it; only then \
+call save_dictated_recipe.
+
+About the cook:
+- cook_profile in the state holds their stated preferences and habits learned \
+from what they cook. Use it when suggesting dishes. get_recipe already \
+tailors new recipes to it; if the result has tailored_to or servings_note, \
+mention it in a few words (e.g. "I kept it vegetarian like you usually do.").
+- When the cook states a lasting preference ("I'm vegetarian", "I'm allergic \
+to nuts", "I don't like coriander", "I always have paneer at home"), call \
+remember_preference. A one-off ("no onions today") is a get_recipe \
+constraint instead. "Forget that I..." means forget_preference.
+- Allergies matter for safety: if the cook asks for something containing a \
+known allergen, point it out before going ahead.
+
+General:
+- Use tools for anything that reads or changes the recipe, step position, \
+timers or the recipe book. Never invent a step or quantity: get it from a \
+tool result.
 - If a tool returns an error, explain it briefly and suggest what to say next.
 
 Current state (authoritative, refreshed every turn):
@@ -106,7 +146,8 @@ _END = object()
 class CookingAgent:
     def __init__(self, stt: STTProvider, llm: LLMProvider, tts: TTSProvider, sink: AudioSink,
                  config: AgentConfig | None = None, metrics: MetricsSink | None = None,
-                 on_text: Callable[[str, str], None] | None = None):
+                 on_text: Callable[[str, str], None] | None = None,
+                 recipes: RecipeStore | None = None, preferences: PreferenceStore | None = None):
         self.stt, self.llm, self.tts, self.sink = stt, llm, tts, sink
         self.config = config or AgentConfig()
         self.metrics = metrics or MetricsSink()
@@ -115,7 +156,7 @@ class CookingAgent:
 
         self.session = CookingSession()
         self.timers = TimerManager(on_fire=self._on_timer_fired)
-        self.tools = ToolBox(self.session, self.timers, llm)
+        self.tools = ToolBox(self.session, self.timers, llm, store=recipes, prefs=preferences)
         self.turn = TurnStateMachine(on_change=lambda a, b: log.debug("turn %s -> %s", a.value, b.value))
         self.gate = MicGate(sink, on_barge_in=self.barge_in, enabled=self.config.barge_in,
                             threshold_dbfs=self.config.barge_in_threshold_dbfs,
@@ -321,6 +362,8 @@ class CookingAgent:
         state["timers"] = self.timers.list()
         if self.timers.recently_finished():
             state["finished_timers"] = self.timers.recently_finished()
+        if self.tools.prefs is not None:
+            state["cook_profile"] = self.tools.prefs.profile()
         return SYSTEM_PROMPT.format(state=json.dumps(state))
 
     async def _think(self, user_text: str, out: _Output) -> None:
@@ -330,6 +373,8 @@ class CookingAgent:
         q = out.queue
         committed: list[Message] = [Message("user", user_text)]
         spoken: list[str] = []
+        all_results: list[ToolResult] = []
+        gave_up = False
 
         def emit(seg: str) -> None:
             spoken.append(seg)
@@ -368,11 +413,15 @@ class CookingAgent:
                 for c in calls:  # sequential on purpose: order matters (e.g. next_step twice)
                     m.tool_calls.append(c.name)
                     results.append(await self.tools.dispatch(c))
+                all_results += results
                 committed.append(reply)
                 committed.append(Message("tool", tool_results=results))
             else:
+                gave_up = True
                 emit("Sorry, I got stuck on that one. Could you say it another way?")
                 committed.append(Message("assistant", "(gave up after too many tool calls)"))
+            if not gave_up:
+                self._ask_follow_up(all_results, committed, spoken, emit)
         except asyncio.CancelledError:
             self._commit_interrupted(committed, spoken)
             raise
@@ -380,6 +429,21 @@ class CookingAgent:
             self._commit(committed)
         finally:
             q.put_nowait(_END)
+
+    def _ask_follow_up(self, results: list[ToolResult], committed: list[Message], spoken: list[str],
+                       emit: Callable[[str], None]) -> None:
+        """Append the app's own question after a step ("start a timer?" /
+        "ready for the next step?"). Done here rather than left to the model
+        so the cook is asked every time, in the same words."""
+        question = self.tools.follow_up(results)
+        if not question:
+            return
+        if " ".join(spoken).rstrip().endswith("?"):
+            return  # the model already ended on a question; don't stack a second one
+        emit(question)
+        self.on_text("assistant", question)
+        last = committed[-1]  # the final reply of the turn, text only
+        committed[-1] = Message("assistant", f"{last.text} {question}".strip())
 
     def _commit(self, msgs: list[Message]) -> None:
         self.history.extend(msgs)

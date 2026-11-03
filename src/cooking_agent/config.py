@@ -15,6 +15,8 @@ from .providers.base import LLMProvider, STTProvider, TTSProvider
 
 log = logging.getLogger(__name__)
 
+DEFAULT_RECIPE_DB = "~/.cooking-agent/recipes.db"
+
 
 @dataclass
 class Settings:
@@ -30,6 +32,7 @@ class Settings:
     wake_word: Optional[str] = None
     barge_in: bool = True
     metrics_path: Optional[str] = None
+    recipe_db: str = DEFAULT_RECIPE_DB
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -52,6 +55,7 @@ class Settings:
             wake_word=(e("WAKE_WORD") or None),
             barge_in=flag("BARGE_IN", True),
             metrics_path=e("METRICS_LOG") or None,
+            recipe_db=e("RECIPE_DB") or DEFAULT_RECIPE_DB,
         )
 
 
@@ -92,3 +96,15 @@ def make_tts(s: Settings) -> TTSProvider:
 
         return Pyttsx3TTS()
     raise ValueError(f"unknown TTS_PROVIDER {s.tts!r}")
+
+
+def open_recipe_store(s: Settings):
+    from .recipe_store import RecipeStore
+
+    return RecipeStore(s.recipe_db)
+
+
+def open_preferences(s: Settings):
+    from .preferences import PreferenceStore
+
+    return PreferenceStore(s.recipe_db)  # same local file as the recipe book

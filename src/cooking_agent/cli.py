@@ -3,6 +3,8 @@
     run       live voice agent (mic + speakers)
     chat      type instead of talking; real LLM and tools, replies printed (and spoken with --speak)
     demo      fully offline scripted session with fake providers (no keys, no audio hardware)
+    recipes   manage the recipe book: add a recipe from a web page or file, list, show, remove
+    prefs     show or edit your saved preferences (diet, allergies, dislikes, pantry) and learned habits
     bench     end-to-end latency benchmark over recorded WAV fixtures
     diagnose  check audio devices, mic level, provider keys and connectivity
 """
@@ -21,7 +23,7 @@ from dotenv import load_dotenv
 
 from .agent import AgentConfig, CookingAgent
 from .audio import MicSource, SimulatedSink, SoundDeviceSink, dbfs, pcm_rms
-from .config import Settings, make_llm, make_stt, make_tts
+from .config import Settings, make_llm, make_stt, make_tts, open_preferences, open_recipe_store
 from .metrics import MetricsSink
 
 
@@ -39,16 +41,18 @@ async def _run(args: argparse.Namespace) -> int:
         s.barge_in = False
     stt, llm, tts = make_stt(s), make_llm(s), make_tts(s)
     sink = SoundDeviceSink(device=args.output_device)
+    store = open_recipe_store(s)
     agent = CookingAgent(
         stt, llm, tts, sink,
         AgentConfig(wake_word=s.wake_word, barge_in=s.barge_in),
-        MetricsSink(s.metrics_path), on_text=_print_text,
+        MetricsSink(s.metrics_path), on_text=_print_text, recipes=store, preferences=open_preferences(s),
     )
     if hasattr(tts, "warmup"):
         with contextlib.suppress(Exception):
             await tts.warmup()
     print(f"providers: stt={stt.name} llm={llm.name} tts={tts.name}; "
-          f"wake word: {s.wake_word or '(none, always listening)'}; barge-in: {s.barge_in}")
+          f"wake word: {s.wake_word or '(none, always listening)'}; barge-in: {s.barge_in}; "
+          f"recipe book: {len(store)} recipes")
     print("Speak now. Say something like 'find me a recipe for fried rice'. Ctrl+C to quit.")
     try:
         await agent.run(MicSource(device=args.input_device).frames())
@@ -72,7 +76,8 @@ async def _chat(args: argparse.Namespace) -> int:
     from .providers.fake import QueueSTT
 
     agent = CookingAgent(QueueSTT(), llm, tts, sink, AgentConfig(barge_in=False),
-                         MetricsSink(s.metrics_path), on_text=_print_text)
+                         MetricsSink(s.metrics_path), on_text=_print_text, recipes=open_recipe_store(s),
+                         preferences=open_preferences(s))
     loop = asyncio.get_running_loop()
     timers_task = asyncio.create_task(agent._announcer())  # timer announcements in text mode
     print(f"text mode (llm={llm.name}). Type a message, empty line or Ctrl+D to quit.")
@@ -96,6 +101,81 @@ async def _demo(args: argparse.Namespace) -> int:
     from .demo import run_demo
 
     await run_demo()
+    return 0
+
+
+# ------------------------------------------------------------------ recipes
+async def _recipes(args: argparse.Namespace) -> int:
+    from .recipe_import import RecipeImportError, recipe_from_source
+
+    store = open_recipe_store(Settings.from_env())
+    if args.action == "add":
+        try:
+            recipe = await asyncio.to_thread(recipe_from_source, args.source)
+        except (RecipeImportError, ValueError) as e:  # ValueError covers pydantic validation errors
+            print(f"could not import: {e}")
+            return 1
+        if args.servings:
+            recipe = recipe.model_copy(update={"servings": args.servings})
+        if args.title:
+            recipe = recipe.model_copy(update={"title": args.title})
+        rid = store.add(recipe, source=args.source)
+        _print_recipe(rid, recipe)
+        print(f"saved as #{rid}. Check the servings above: quantities scale from it.")
+    elif args.action == "list":
+        rows = store.search(args.query) if args.query else store.all()
+        if not rows:
+            print("recipe book is empty" if not args.query else "no matches")
+        for r in rows:
+            print(f"#{r.id:<4} {r.title}  (serves {r.recipe.servings}; {r.source or 'unknown source'})")
+    elif args.action == "show":
+        r = store.get(args.id)
+        if r is None:
+            print(f"no recipe #{args.id}")
+            return 1
+        _print_recipe(r.id, r.recipe)
+    elif args.action == "remove":
+        if not store.remove(args.id):
+            print(f"no recipe #{args.id}")
+            return 1
+        print(f"removed #{args.id}")
+    return 0
+
+
+def _print_recipe(rid: int, recipe) -> None:
+    from .recipe import format_minutes
+
+    print(f"#{rid} {recipe.title} (serves {recipe.servings})")
+    print("ingredients:")
+    for ing in recipe.ingredients:
+        print(f"  - {ing.describe()}")
+    print("steps:")
+    for i, step in enumerate(recipe.steps, 1):
+        timer = f"  [timer: {format_minutes(step.timer_minutes)}]" if step.timer_minutes else ""
+        print(f"  {i}. {step.instruction}{timer}")
+
+
+# ------------------------------------------------------------------ prefs
+async def _prefs(args: argparse.Namespace) -> int:
+    prefs = open_preferences(Settings.from_env())
+    if args.action == "add":
+        new = prefs.remember(args.category, " ".join(args.value))
+        print("saved" if new else "already known")
+    elif args.action == "remove":
+        removed = prefs.forget(" ".join(args.value))
+        print("removed: " + ", ".join(r["value"] for r in removed) if removed else "no matching preference")
+        return 0 if removed else 1
+    elif args.action == "forget-history":
+        prefs.forget_history()
+        print("forgot learned habits (recipe requests and ingredient counts); stated preferences kept")
+    stated = prefs.stated()
+    learned = prefs.learned()
+    print("stated preferences:" if stated else "stated preferences: none")
+    for r in stated:
+        print(f"  {r['category']:<8} {r['value']}")
+    print("learned from history:" if learned else "learned from history: nothing yet")
+    for k, v in learned.items():
+        print(f"  {k.replace('_', ' ')}: {', '.join(v) if isinstance(v, list) else v}")
     return 0
 
 
@@ -199,6 +279,28 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("demo", help="offline scripted demo with fake providers")
 
+    rc = sub.add_parser("recipes", help="manage the saved recipe book")
+    rsub = rc.add_subparsers(dest="action", required=True)
+    ra = rsub.add_parser("add", help="import a recipe from a web page or a file (.md/.txt/.json)")
+    ra.add_argument("source", help="URL or file path")
+    ra.add_argument("--servings", type=int, default=None, help="override the servings the source states")
+    ra.add_argument("--title", default=None, help="override the title")
+    rl = rsub.add_parser("list", help="list saved recipes")
+    rl.add_argument("query", nargs="?", default=None)
+    rs = rsub.add_parser("show", help="print one recipe")
+    rs.add_argument("id", type=int)
+    rr = rsub.add_parser("remove", help="delete one recipe")
+    rr.add_argument("id", type=int)
+
+    pf = sub.add_parser("prefs", help="show or edit what the assistant knows about you")
+    psub = pf.add_subparsers(dest="action")
+    pa = psub.add_parser("add", help="add a stated preference")
+    pa.add_argument("category", choices=["diet", "allergy", "dislike", "like", "pantry", "other"])
+    pa.add_argument("value", nargs="+")
+    pr = psub.add_parser("remove", help="remove stated preferences matching a phrase")
+    pr.add_argument("value", nargs="+")
+    psub.add_parser("forget-history", help="clear learned habits")
+
     b = sub.add_parser("bench", help="end-to-end latency benchmark over WAV fixtures")
     b.add_argument("--runs", type=int, default=1, help="passes over the fixture set")
     b.add_argument("--fake", action="store_true", help="offline fake providers (harness check, no keys)")
@@ -217,7 +319,8 @@ def main(argv: list[str] | None = None) -> int:
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     for noisy in ("httpx", "websockets", "google_genai"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
-    handler = {"run": _run, "chat": _chat, "demo": _demo, "bench": _bench, "diagnose": _diagnose}[args.cmd]
+    handler = {"run": _run, "chat": _chat, "demo": _demo, "bench": _bench, "recipes": _recipes, "prefs": _prefs,
+               "diagnose": _diagnose}[args.cmd]
     try:
         return asyncio.run(handler(args))
     except KeyboardInterrupt:

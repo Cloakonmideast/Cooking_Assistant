@@ -55,7 +55,7 @@ def test_scale_servings(recipe):
     s.load_recipe(recipe)
     out = s.scale_servings(6)
     assert out["factor"] == 3
-    assert out["ingredients"][0] == "3 cup basmati rice, rinsed"
+    assert out["ingredients"][0] == "3 cups basmati rice, rinsed"
     assert out["ingredients"][2] == "4 and 1/2 tbsp ghee"
     assert out["ingredients"][3] == "salt"
     with pytest.raises(InvalidTransition):
@@ -81,7 +81,8 @@ def test_snapshot(recipe):
     assert s.snapshot() == {"phase": "no_recipe"}
     s.load_recipe(recipe)
     s.next_step()
-    assert s.snapshot() == {"phase": "cooking", "recipe": "Jeera Rice", "servings": 2, "step": 1, "total_steps": 3}
+    assert s.snapshot() == {"phase": "cooking", "recipe": "Jeera Rice", "servings": 2, "step": 1, "total_steps": 3,
+                            "current_step_timer": "20 minutes"}
 
 
 # ------------------------------------------------------------ turn state

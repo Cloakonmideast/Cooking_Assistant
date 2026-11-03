@@ -34,7 +34,8 @@ async def test_tool_turn_updates_state_and_history(recipe):
     await agent.submit_text("find a jeera rice recipe")
     await agent.submit_text("next step please")
     assert agent.session.step_index == 0
-    assert tts.spoken[-1] == "Step 1. Soak the rice for 20 minutes."
+    assert tts.spoken[-2:] == ["Step 1. Soak the rice for 20 minutes.",
+                               "Do you want me to start a timer for 20 minutes?"]
     roles = [m.role for m in agent.history]
     assert roles == ["user", "assistant", "tool", "assistant"] * 2
     assert agent.metrics.turns[1]["tool_calls"] == ["next_step"]
@@ -235,3 +236,78 @@ def test_percentile():
 
     xs = list(range(1, 101))
     assert percentile(xs, 50) == 50 and percentile(xs, 95) == 95 and percentile([7], 95) == 7
+
+
+# ------------------------------------------------------------------ step pacing
+def pacing_agent(recipe):
+    return make_agent(recipe, script={
+        "recipe": [ToolCall("get_recipe", {"dish": "jeera rice"})],
+        "start it": ["Okay.", ToolCall("start_step_timer", {"name": "rice"})],
+        "no thanks": ["No problem."],
+        "not yet": ["No problem, take your time."],
+        "ready": [ToolCall("next_step", {})],
+        "question": ["Is the water boiling?"],
+    })
+
+
+async def test_step_with_time_offers_timer_then_asks_if_ready(recipe):
+    from cooking_agent.state import Awaiting
+    from cooking_agent.tools import READY_QUESTION
+
+    agent, _, tts, _ = pacing_agent(recipe)
+    await agent.submit_text("recipe please")
+    await agent.submit_text("ready")
+    assert tts.spoken[-1] == "Do you want me to start a timer for 20 minutes?"
+    assert agent.session.awaiting is Awaiting.TIMER
+    assert agent.session.snapshot()["awaiting_answer_to"] == "start_timer"
+
+    await agent.submit_text("yes start it")
+    assert agent.timers.list()[0]["name"] == "rice"
+    assert tts.spoken[-1] == READY_QUESTION and agent.session.awaiting is Awaiting.NEXT_STEP
+    # the question is part of the history, so the model knows what "yes" answers
+    assert agent.history[-1].text.endswith(READY_QUESTION)
+
+    n = len(tts.spoken)
+    await agent.submit_text("not yet")
+    assert tts.spoken[n:] == ["No problem, take your time."]  # not nagged again
+    assert agent.session.step_index == 0
+
+    await agent.submit_text("ready")  # step 2 has no time -> straight to "ready?"
+    assert agent.session.step_index == 1
+    assert tts.spoken[-1] == READY_QUESTION
+    await agent.timers.aclose()
+
+
+async def test_declining_the_timer_moves_on_to_ready_question(recipe):
+    from cooking_agent.tools import READY_QUESTION
+
+    agent, _, tts, _ = pacing_agent(recipe)
+    await agent.submit_text("recipe please")
+    await agent.submit_text("ready")
+    await agent.submit_text("no thanks")
+    assert tts.spoken[-2:] == ["No problem.", READY_QUESTION]
+    assert agent.timers.list() == []
+
+
+async def test_last_step_offers_timer_but_not_another_step(recipe):
+    agent, _, tts, _ = pacing_agent(recipe)
+    await agent.submit_text("recipe please")
+    for _ in range(3):
+        await agent.submit_text("ready")
+    assert agent.session.on_last_step
+    assert tts.spoken[-1] == "Do you want me to start a timer for 12 minutes?"
+    await agent.submit_text("yes start it")
+    assert tts.spoken[-1] == "Okay, rice timer started for 12 minutes."  # no "ready for the next step?"
+    assert agent.session.awaiting is None
+    await agent.timers.aclose()
+
+
+async def test_no_second_question_when_model_already_asked_one(recipe):
+    agent, llm, tts, _ = pacing_agent(recipe)
+    await agent.submit_text("recipe please")
+    llm.script = {"ready": [ToolCall("next_step", {})]}
+    llm._describe = lambda name, result: "Step 1. Soak the rice. Shall I set a timer?"
+    await agent.submit_text("ready")
+    assert tts.spoken[-1] == "Shall I set a timer?"
+    assert "Do you want me to start a timer for 20 minutes?" not in tts.spoken
+    assert agent.session.awaiting is not None  # "yes" still routes to the timer
