@@ -3,6 +3,7 @@
     run       live voice agent (mic + speakers)
     chat      type instead of talking; real LLM and tools, replies printed (and spoken with --speak)
     demo      fully offline scripted session with fake providers (no keys, no audio hardware)
+    bench     end-to-end latency benchmark over recorded WAV fixtures
     diagnose  check audio devices, mic level, provider keys and connectivity
 """
 
@@ -98,6 +99,23 @@ async def _demo(args: argparse.Namespace) -> int:
     return 0
 
 
+# ------------------------------------------------------------------ bench
+async def _bench(args: argparse.Namespace) -> int:
+    import json
+    from pathlib import Path
+
+    from .bench import DEFAULT_FIXTURES, format_report, run_benchmark
+
+    report = await run_benchmark(Path(args.fixtures) if args.fixtures else DEFAULT_FIXTURES,
+                                 runs=args.runs, fake=args.fake, realtime=not args.no_realtime,
+                                 only=args.only or None, timeout_s=args.timeout)
+    print(format_report(report))
+    if args.out:
+        Path(args.out).write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+        print(f"wrote {args.out}")
+    return 1 if report["summary"]["errors"] else 0
+
+
 # ------------------------------------------------------------------ diagnose
 async def _diagnose(args: argparse.Namespace) -> int:
     ok = True
@@ -181,6 +199,15 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("demo", help="offline scripted demo with fake providers")
 
+    b = sub.add_parser("bench", help="end-to-end latency benchmark over WAV fixtures")
+    b.add_argument("--runs", type=int, default=1, help="passes over the fixture set")
+    b.add_argument("--fake", action="store_true", help="offline fake providers (harness check, no keys)")
+    b.add_argument("--no-realtime", action="store_true", help="feed audio as fast as possible (fake mode only)")
+    b.add_argument("--only", nargs="*", help="fixture names to run, e.g. next_step set_timer")
+    b.add_argument("--fixtures", default=None, help="directory with manifest.json (default bench/fixtures)")
+    b.add_argument("--timeout", type=float, default=45.0, help="seconds per fixture")
+    b.add_argument("--out", default=None, help="write the full JSON report here")
+
     d = sub.add_parser("diagnose", help="check devices, mic level and providers")
     d.add_argument("--mic-seconds", type=float, default=3.0, help="0 to skip the mic test")
     d.add_argument("--input-device", default=None)
@@ -190,7 +217,7 @@ def main(argv: list[str] | None = None) -> int:
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     for noisy in ("httpx", "websockets", "google_genai"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
-    handler = {"run": _run, "chat": _chat, "demo": _demo, "diagnose": _diagnose}[args.cmd]
+    handler = {"run": _run, "chat": _chat, "demo": _demo, "bench": _bench, "diagnose": _diagnose}[args.cmd]
     try:
         return asyncio.run(handler(args))
     except KeyboardInterrupt:
