@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cooking-agent"
+version = "0.3.0"
+description = "Real-time, hands-free voice cooking agent: streaming STT -> LLM tool calling -> streaming TTS"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Naman Singh Baid" }]
+dependencies = [
+    "google-genai==2.34.0",
+    "websockets==17.4",
+    "pydantic==2.14.2",
+    "numpy==2.5.4",
+    "sounddevice==0.5.6",
+    "python-dotenv==1.2.4",
+    "yt-dlp==2026.10.26",
+]
+
+[project.optional-dependencies]
+offline = ["vosk==0.3.45", "pyttsx3==2.99"]
+dev = ["pytest==9.2.0", "pytest-asyncio==1.4.1.post1"]
+
+[project.scripts]
+cooking-agent = "cooking_agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

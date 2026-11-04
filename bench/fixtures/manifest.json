@@ -1,0 +1,15 @@
+{
+  "note": "Synthetic utterances generated with espeak-ng (bench/make_fixtures.sh). Replace or extend with your own recordings: 16-bit mono WAV, any sample rate, one utterance per file. expect_tool is the tool the agent should call first (null = answer without a tool).",
+  "fixtures": [
+    {"file": "next_step.wav", "text": "next step please", "needs_recipe": true, "expect_tool": "next_step"},
+    {"file": "repeat_step.wav", "text": "can you repeat that step", "needs_recipe": true, "expect_tool": "repeat_step"},
+    {"file": "previous_step.wav", "text": "go back one step", "needs_recipe": true, "expect_tool": "previous_step"},
+    {"file": "ingredients.wav", "text": "what are the ingredients", "needs_recipe": true, "expect_tool": "list_ingredients"},
+    {"file": "set_timer.wav", "text": "set a rice timer for twelve minutes", "needs_recipe": true, "expect_tool": "set_timer"},
+    {"file": "list_timers.wav", "text": "how long is left on my timers", "needs_recipe": true, "expect_tool": "list_timers"},
+    {"file": "scale.wav", "text": "make it for six people instead", "needs_recipe": true, "expect_tool": "scale_servings"},
+    {"file": "substitute.wav", "text": "I don't have ghee, what can I use instead", "needs_recipe": true, "expect_tool": "substitute_ingredient"},
+    {"file": "chitchat.wav", "text": "how do I know when the rice is done", "needs_recipe": true, "expect_tool": null},
+    {"file": "get_recipe.wav", "text": "find me a recipe for jeera rice", "needs_recipe": false, "expect_tool": "get_recipe"}
+  ]
+}

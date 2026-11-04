@@ -3,3 +3,8 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+.pytest_cache/
+*.egg-info/
+*.db
+metrics.jsonl
+bench/results.json
