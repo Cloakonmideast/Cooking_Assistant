@@ -47,7 +47,7 @@ from .recipe_store import RecipeStore
 from .segmenter import SentenceSegmenter
 from .state import CookingSession, TurnState, TurnStateMachine
 from .timers import TimerManager
-from .tools import ToolBox
+from .tools import STEP_TOOLS, ToolBox
 
 log = logging.getLogger(__name__)
 
@@ -58,11 +58,12 @@ you say is spoken aloud.
 Speaking style:
 - Reply in one to three short sentences of plain spoken English. No markdown, \
 lists, emojis or symbols.
-- When reading a step, say the step number and the instruction. Do not read \
-ahead unless asked.
-- After reading a step or starting a step timer, do NOT ask a follow-up \
-question: the app itself asks "Do you want me to start a timer for N minutes?" \
-or "Are you ready for the next step?" right after your reply.
+- The app reads steps aloud itself, word for word, when you call next_step, \
+previous_step or repeat_step; you will not be asked to speak after those. \
+Do not read ahead unless asked.
+- Read ingredient lines exactly as the tool gives them; don't reword them.
+- After starting a step timer, do NOT ask a follow-up question: the app \
+itself asks "Are you ready for the next step?" right after your reply.
 - When listing ingredients, read at most six at a time and offer the rest.
 
 Steps and timers:
@@ -448,6 +449,14 @@ class CookingAgent:
                 all_results += results
                 committed.append(reply)
                 committed.append(Message("tool", tool_results=results))
+                step_text = self._step_speech(results)
+                if step_text is not None:
+                    # Read the step ourselves, word for word, instead of asking
+                    # the model to: exact wording and one LLM round fewer.
+                    emit(step_text)
+                    self.on_text("assistant", step_text)
+                    committed.append(Message("assistant", step_text))
+                    break
             else:
                 gave_up = True
                 emit("Sorry, I got stuck on that one. Could you say it another way?")
@@ -461,6 +470,16 @@ class CookingAgent:
             self._commit(committed)
         finally:
             q.put_nowait(_END)
+
+    @staticmethod
+    def _step_speech(results: list[ToolResult]) -> Optional[str]:
+        """'Step 3. <instruction exactly as stored>' when every call this round
+        was step navigation that succeeded; None to let the model answer."""
+        if not results or not all(r.name in STEP_TOOLS and "instruction" in r.result for r in results):
+            return None
+        step = results[-1].result  # 'go back two steps' -> read where we ended up
+        last = ", the last step" if step.get("is_last_step") else ""
+        return f"Step {step['step_number']}{last}. {step['instruction']}"
 
     def _ask_follow_up(self, results: list[ToolResult], committed: list[Message], spoken: list[str],
                        emit: Callable[[str], None]) -> None:

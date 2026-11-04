@@ -105,6 +105,14 @@ class TurnComplete:
 
 LLMEvent = TextDelta | ToolCallEvent | TurnComplete
 
+
+@dataclass(frozen=True)
+class MediaPart:
+    """A file sent to the LLM alongside the prompt: image, PDF, audio or video."""
+
+    data: bytes
+    mime_type: str
+
 M = TypeVar("M", bound=BaseModel)
 
 
@@ -118,8 +126,10 @@ class LLMProvider(Protocol):
         """Stream one model round. Must end with exactly one ``TurnComplete``."""
         ...
 
-    async def generate_structured(self, prompt: str, schema: Type[M]) -> M:
-        """One-shot generation constrained to ``schema``; returns a validated model."""
+    async def generate_structured(self, prompt: str, schema: Type[M],
+                                  media: Optional[list[MediaPart]] = None) -> M:
+        """One-shot generation constrained to ``schema``; returns a validated
+        model. ``media`` (images, PDFs, audio) is sent before the prompt."""
         ...
 
 

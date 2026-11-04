@@ -305,9 +305,25 @@ async def test_last_step_offers_timer_but_not_another_step(recipe):
 async def test_no_second_question_when_model_already_asked_one(recipe):
     agent, llm, tts, _ = pacing_agent(recipe)
     await agent.submit_text("recipe please")
-    llm.script = {"ready": [ToolCall("next_step", {})]}
-    llm._describe = lambda name, result: "Step 1. Soak the rice. Shall I set a timer?"
     await agent.submit_text("ready")
-    assert tts.spoken[-1] == "Shall I set a timer?"
-    assert "Do you want me to start a timer for 20 minutes?" not in tts.spoken
-    assert agent.session.awaiting is not None  # "yes" still routes to the timer
+    llm._describe = lambda name, result: "Timer started. Ready for the next step?"
+    await agent.submit_text("yes start it")
+    assert tts.spoken[-1] == "Ready for the next step?"
+    assert tts.spoken.count("Are you ready for the next step?") == 0
+    assert agent.session.awaiting is not None  # "yes" still routes to next_step
+    await agent.timers.aclose()
+
+
+async def test_steps_are_read_word_for_word_without_another_llm_round(recipe):
+    agent, llm, tts, _ = pacing_agent(recipe)
+    await agent.submit_text("recipe please")
+    rounds = len(llm.calls)
+    await agent.submit_text("ready")
+    assert len(llm.calls) == rounds + 1  # only the round that chose next_step
+    assert "Step 1. Soak the rice for 20 minutes." in tts.spoken
+    await agent.submit_text("ready")
+    await agent.submit_text("ready")
+    assert "Step 3, the last step. Add rice, water and salt; cook covered for 12 minutes." in tts.spoken
+    # history stays well-formed: call, result, then what was said
+    assert [m.role for m in agent.history[-3:]] == ["assistant", "tool", "assistant"]
+    assert agent.history[-1].text.startswith("Step 3, the last step.")

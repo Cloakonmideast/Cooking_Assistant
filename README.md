@@ -61,7 +61,7 @@ cooking-agent run
 | `cooking-agent run` | Live voice agent (mic + speakers). `--wake-word chef` to require a wake word, `--no-barge-in` to disable interrupting. |
 | `cooking-agent chat` | Type instead of talk, with the real LLM and tools. `--speak` also speaks replies. |
 | `cooking-agent demo` | Scripted offline session with fake providers: step pacing, a timer firing, a barge-in, dictating a recipe. |
-| `cooking-agent recipes add <url-or-file>` | Import a recipe into your recipe book. Also `recipes list [words]`, `recipes show <id>`, `recipes remove <id>`. |
+| `cooking-agent recipes add <link-or-file>` | Save a recipe from a web page, YouTube, Instagram, TikTok, a photo, PDF, audio or video. Also `recipes list [words]`, `recipes show <id>`, `recipes remove <id>`. |
 | `cooking-agent setup` | Answer the first-time questions (allergies, conditions, diet) by typing. The voice agent asks them on first run anyway. |
 | `cooking-agent prefs` | Show what it knows about you. `prefs add diet vegetarian`, `prefs remove mushrooms`, `prefs forget-history`. |
 | `cooking-agent bench` | End-to-end latency benchmark over WAV fixtures (see below). |
@@ -125,11 +125,23 @@ recipe when there's no match. Saved recipes are read back exactly as stored and
 scaled to however many people you're cooking for. The book is a local SQLite
 file (`RECIPE_DB`, default `~/.cooking-agent/recipes.db`). Ways to fill it:
 
-* **From a web page:** `cooking-agent recipes add https://...`. Most recipe
-  sites embed the recipe in a standard machine-readable form (schema.org); the
-  title, servings, ingredient lines and steps are taken from it as published.
-  Some sites block automated downloads; then save the page's recipe into a file.
-* **From a file you write:**
+* **From a link:** `cooking-agent recipes add <link>`.
+  * *Recipe web pages:* most embed the recipe in a standard machine-readable
+    form (schema.org), which is taken exactly as published. Pages without it
+    are read as text.
+  * *YouTube (videos and Shorts), Instagram reels and posts, TikTok, Facebook,
+    X, Pinterest and many more* (via [yt-dlp](https://github.com/yt-dlp/yt-dlp)):
+    first the caption/description, where many creators write the full recipe;
+    if it isn't there, the video's subtitles; if there are none, a small audio
+    track is downloaded to a temporary folder, transcribed (Deepgram, or Gemini
+    without a Deepgram key) and deleted. The video itself is never downloaded.
+  * Instagram and some other sites often need you to be logged in: add
+    `--cookies-from-browser chrome` (or `firefox`, `safari`, `edge`) to use the
+    login from your browser, or set `YTDLP_COOKIES_FROM_BROWSER`.
+* **From a file:** a photo or screenshot of a recipe (`.jpg`, `.png`,
+  `.heic`...), a PDF, an audio or video recording (`.mp3`, `.m4a`, `.mp4`,
+  `.mov`...), a saved web page, a pasted caption in a `.txt` file, or a recipe
+  you write yourself:
 
   ```markdown
   # Mum's Dal
@@ -151,6 +163,28 @@ file (`RECIPE_DB`, default `~/.cooking-agent/recipes.db`). Ways to fill it:
   answers "Got it." Fix mistakes ("remove step three"), ask it to read the
   draft back, and say "that's it, save it".
 * **A generated recipe you liked:** "Save this recipe."
+
+### Word for word
+
+Imported recipes are kept and read exactly as the creator wrote or said them.
+
+* Where a source has no fixed layout (captions, transcripts, pages without
+  recipe data), Gemini finds the recipe but is only allowed to *copy*: split
+  it into ingredient lines and steps, and leave out chatter (greetings,
+  hashtags, "link in bio", "um"). Every line it returns is then checked in code
+  against the source: the same words in the same order, nothing added or
+  reworded. Reworded lines are sent back once; anything still not word for word
+  is listed when you import, so you can check it. Photos and PDFs can't be
+  checked this way, so you're reminded to look them over (`recipes show <id>`).
+* When cooking, the app speaks each step itself ("Step 3. " followed by the
+  step exactly as stored) rather than having the model read it, and ingredient
+  lines are given exactly as published. Only scaling rewrites an amount
+  ("1½ cups" becomes "3 cups" for double), because the original number no
+  longer applies.
+* If the source doesn't say how many it serves, 4 is assumed and you're told;
+  use `--servings` so scaling starts from the right number.
+* A recipe in another language is kept in that language; the English voice
+  will not read it well.
 
 Ingredient lines like "1½ cups basmati rice, rinsed" are parsed into quantity,
 unit, name and note so scaling works; lines without an amount ("salt to
@@ -279,7 +313,8 @@ src/cooking_agent/
   tools.py        tool schemas (pydantic), dispatcher, follow-up questions after steps
   recipe.py       recipe schema; parsing quantities, durations and ingredient lines
   recipe_store.py recipe book (SQLite) and search
-  recipe_import.py  import from web pages (schema.org JSON-LD) and files
+  recipe_import.py  import from any link or file; word-for-word extraction check
+  media_import.py   captions/subtitles/audio via yt-dlp; transcription
   preferences.py  stated preferences, learned habits, first-run setup flag
   dietary.py      ingredient checks against allergies and health conditions
   timers.py       concurrent named asyncio timers

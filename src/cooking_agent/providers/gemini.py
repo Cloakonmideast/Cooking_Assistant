@@ -21,6 +21,7 @@ from pydantic import ValidationError
 from .base import (
     M,
     LLMEvent,
+    MediaPart,
     Message,
     TextDelta,
     ToolCall,
@@ -121,7 +122,8 @@ class GeminiLLM:
         yield TurnComplete(Message(role="assistant", text="".join(text), tool_calls=calls, raw=raw))
 
     # ------------------------------------------------------------ structured
-    async def generate_structured(self, prompt: str, schema: Type[M]) -> M:
+    async def generate_structured(self, prompt: str, schema: Type[M],
+                                  media: Optional[list[MediaPart]] = None) -> M:
         t = self._types
         config = t.GenerateContentConfig(
             response_mime_type="application/json",
@@ -130,11 +132,12 @@ class GeminiLLM:
         )
         if self.thinking_level:
             config.thinking_config = t.ThinkingConfig(thinking_level=self.thinking_level.upper())
+        parts = [t.Part.from_bytes(data=m.data, mime_type=m.mime_type) for m in media or []]
         contents = prompt
         last_err: Optional[Exception] = None
         for attempt in range(2):
             resp = await self.client.aio.models.generate_content(
-                model=self.recipe_model, contents=contents, config=config
+                model=self.recipe_model, contents=[*parts, contents] if parts else contents, config=config
             )
             try:
                 return schema.model_validate_json(resp.text or "")

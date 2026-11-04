@@ -21,6 +21,8 @@ class Ingredient(BaseModel):
     )
     unit: Optional[str] = Field(default=None, description="Unit such as 'g', 'cup', 'tsp'.")
     note: Optional[str] = Field(default=None, description="Prep note, e.g. 'finely chopped'.")
+    original: Optional[str] = Field(
+        default=None, description="Leave empty. The line exactly as published, for imported recipes.")
 
     @field_validator("name")
     @classmethod
@@ -31,7 +33,13 @@ class Ingredient(BaseModel):
         return v
 
     def describe(self, factor: float = 1.0) -> str:
-        """Human/TTS-friendly line, e.g. '1 and 1/2 cups basmati rice, rinsed'."""
+        """Human/TTS-friendly line, e.g. '1 and 1/2 cups basmati rice, rinsed'.
+
+        An imported ingredient at its original amount is given exactly as
+        published; only a scaled amount is rewritten from the parsed parts.
+        """
+        if self.original and (factor == 1 or self.quantity is None):
+            return self.original
         parts: list[str] = []
         scaled = None if self.quantity is None else self.quantity * factor
         if scaled is not None:
@@ -236,4 +244,4 @@ def parse_ingredient_line(line: str) -> Ingredient:
         notes.append(note.strip())
     name = text.strip(" ,") or line.strip()
     return Ingredient(name=name, quantity=quantity, unit=unit.lower() if unit else None,
-                      note=", ".join(n for n in notes if n) or None)
+                      note=", ".join(n for n in notes if n) or None, original=" ".join(line.split()))

@@ -114,21 +114,33 @@ async def _demo(args: argparse.Namespace) -> int:
 
 # ------------------------------------------------------------------ recipes
 async def _recipes(args: argparse.Namespace) -> int:
-    from .recipe_import import RecipeImportError, recipe_from_source
+    from .media_import import MediaError, YtDlpFetcher, make_transcriber
+    from .recipe_import import RecipeImportError, import_recipe
 
-    store = open_recipe_store(Settings.from_env())
+    settings = Settings.from_env()
+    store = open_recipe_store(settings)
     if args.action == "add":
         try:
-            recipe = await asyncio.to_thread(recipe_from_source, args.source)
-        except (RecipeImportError, ValueError) as e:  # ValueError covers pydantic validation errors
+            llm = make_llm(settings)
+        except RuntimeError:  # no GEMINI_API_KEY: fine for pages with recipe data and our own files
+            llm = None
+        print(f"reading {args.source} ...")
+        try:
+            result = await import_recipe(args.source, llm=llm, transcriber=make_transcriber(llm),
+                                         fetcher=YtDlpFetcher(cookies_from_browser=args.cookies_from_browser))
+        except (RecipeImportError, MediaError, ValueError) as e:  # ValueError: pydantic validation
             print(f"could not import: {e}")
             return 1
+        recipe = result.recipe
         if args.servings:
             recipe = recipe.model_copy(update={"servings": args.servings})
         if args.title:
             recipe = recipe.model_copy(update={"title": args.title})
         rid = store.add(recipe, source=args.source)
+        print(f"read from {result.how}")
         _print_recipe(rid, recipe)
+        for w in result.warnings:
+            print(f"note: {w}")
         print(f"saved as #{rid}. Check the servings above: quantities scale from it.")
     elif args.action == "list":
         rows = store.search(args.query) if args.query else store.all()
@@ -317,8 +329,11 @@ def main(argv: list[str] | None = None) -> int:
 
     rc = sub.add_parser("recipes", help="manage the saved recipe book")
     rsub = rc.add_subparsers(dest="action", required=True)
-    ra = rsub.add_parser("add", help="import a recipe from a web page or a file (.md/.txt/.json)")
+    ra = rsub.add_parser("add", help="import a recipe from a link (web page, YouTube, Instagram, TikTok, ...) "
+                         "or a file (text, JSON, photo/screenshot, PDF, audio, video)")
     ra.add_argument("source", help="URL or file path")
+    ra.add_argument("--cookies-from-browser", default=None, metavar="BROWSER",
+                    help="use your browser's login for sites that need it, e.g. Instagram (chrome, firefox, ...)")
     ra.add_argument("--servings", type=int, default=None, help="override the servings the source states")
     ra.add_argument("--title", default=None, help="override the title")
     rl = rsub.add_parser("list", help="list saved recipes")

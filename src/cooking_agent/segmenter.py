@@ -17,7 +17,13 @@ _SENTENCE_END = re.compile(r"((?:(?<!\d)\.+|[!?]+)[\"')\]]*)(\s+)")
 _CLAUSE_END = re.compile(r"([,;:])(\s+)")
 
 
+_FRACTIONS = {"½": "1/2", "¼": "1/4", "¾": "3/4", "⅓": "1/3", "⅔": "2/3", "⅛": "1/8"}
+
+
 def clean_for_speech(text: str) -> str:
+    # '1½ cups' -> '1 and 1/2 cups': same words, but a TTS voice can say it.
+    for ch, frac in _FRACTIONS.items():
+        text = re.sub(rf"(\d)\s*{ch}", rf"\1 and {frac}", text).replace(ch, frac)
     text = _MARKDOWN.sub("", text)
     text = re.sub(r"^\s*[-•]\s+", "", text, flags=re.MULTILINE)  # bullet markers
     return re.sub(r"\s+", " ", text).strip()

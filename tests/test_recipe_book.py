@@ -84,8 +84,12 @@ def test_recipe_from_html_reads_schema_org_json_ld():
     r = recipe_from_html(PAGE)
     assert r.title == "Easy Pancakes & Syrup"
     assert r.servings == 8
+    # read exactly as published...
     assert [i.describe() for i in r.ingredients] == [
-        "100 g plain flour", "2 large eggs", "300 ml milk", "1 tbsp sunflower oil, plus extra"]
+        "100g plain flour", "2 large eggs", "300ml milk", "1 tbsp sunflower oil, plus extra"]
+    # ...and rewritten only when scaled
+    assert [i.describe(2) for i in r.ingredients] == [
+        "200 g plain flour", "4 large eggs", "600 ml milk", "2 tbsp sunflower oil, plus extra"]
     assert [s.instruction for s in r.steps] == [
         "Whisk the flour, eggs and milk to a smooth batter.",
         "Rest the batter for 30 minutes.",

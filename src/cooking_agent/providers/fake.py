@@ -157,7 +157,7 @@ class ScriptedLLM:
             return "Goodbye, happy cooking!"
         return "Done."
 
-    async def generate_structured(self, prompt: str, schema: Type[M]) -> M:
+    async def generate_structured(self, prompt: str, schema: Type[M], media=None) -> M:
         self.prompts.append(prompt)
         if self.recipe is None:
             raise RuntimeError("ScriptedLLM has no recipe configured")
