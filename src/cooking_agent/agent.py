@@ -479,7 +479,8 @@ class CookingAgent:
             seg = SentenceSegmenter()
             calls = []
             reply: Optional[Message] = None
-            async for ev in self.llm.stream(self._system_prompt(), self.history + committed, self.tools.specs()):
+            async for ev in self.llm.stream(self._system_prompt(), self.history + committed,
+                                          self.tools.specs_for(self.session)):
                 m.mark_llm_event()
                 if isinstance(ev, TextDelta):
                     for s in seg.push(ev.text):

@@ -5,6 +5,20 @@ says what was done, why, and how it was checked.
 
 ---
 
+## 2026-11-16 — Task 5: the AI is offered only the actions that fit the moment
+
+* `tools.py`: new `ToolBox.specs_for(session)`. Instead of all 24 actions
+  every turn, the AI now sees 10 when no recipe is loaded, 18 while cooking,
+  plus the setup action during first-run setup and the 5 dictation actions
+  while dictating. Fewer choices means a small local model is faster and
+  picks the right one more often. The list keeps the same order each turn,
+  so Ollama can reuse the unchanged start of the prompt.
+* `agent.py` uses it for every AI round.
+* Tests: 5 new in `tests/test_tools.py` (failed first, then passed); suite
+  254/254.
+
+---
+
 ## 2026-11-16 — Task 4: instant commands connected to the assistant; offline message
 
 * `agent.py`: before asking the AI, every utterance is checked by the

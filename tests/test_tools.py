@@ -97,3 +97,46 @@ async def test_end_session_only_via_tool(box):
     await call(box, "end_session")
     assert box.end_requested
     await box.timers.aclose()
+
+
+# ------------------------------------------------------------ tools offered per phase
+ALWAYS = ["get_recipe", "list_saved_recipes", "start_recipe_dictation", "remember_preference",
+          "forget_preference", "get_preferences", "set_timer", "cancel_timer", "list_timers", "end_session"]
+COOKING = ["save_recipe", "start_step_timer", "next_step", "previous_step", "repeat_step", "list_ingredients",
+           "scale_servings", "substitute_ingredient"]
+DICTATION = ["add_to_dictated_recipe", "remove_from_dictated_recipe", "read_dictated_recipe",
+             "save_dictated_recipe", "discard_dictated_recipe"]
+
+
+def names_for(tb):
+    return [s.name for s in tb.specs_for(tb.session)]
+
+
+def test_specs_no_recipe(box):
+    assert sorted(names_for(box)) == sorted(ALWAYS)
+
+
+def test_specs_cooking(box, recipe):
+    box.session.load_recipe(recipe)
+    got = names_for(box)
+    assert sorted(got) == sorted(ALWAYS + COOKING) and len(got) == 18
+    assert "finish_setup" not in got
+
+
+def test_specs_setup(box):
+    box.session.setup_pending = True
+    assert "finish_setup" in names_for(box)
+
+
+def test_specs_dictating(box):
+    from cooking_agent.state import RecipeDraft
+
+    box.session.draft = RecipeDraft(title="Mum's Dal")
+    assert set(DICTATION) <= set(names_for(box))
+
+
+def test_specs_order_stable(box, recipe):
+    box.session.load_recipe(recipe)
+    first = names_for(box)
+    assert first == names_for(box)
+    assert first == [n for n in box.names if n in first]  # registry order

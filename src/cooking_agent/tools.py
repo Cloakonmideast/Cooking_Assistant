@@ -29,6 +29,15 @@ from .timers import TimerError, TimerManager
 READY_QUESTION = "Are you ready for the next step?"
 STEP_TOOLS = {"next_step", "previous_step", "repeat_step"}
 
+# Tools offered to the LLM per phase (ToolBox.specs_for).
+ALWAYS_TOOLS = {"get_recipe", "list_saved_recipes", "start_recipe_dictation", "set_timer", "cancel_timer",
+                "list_timers", "remember_preference", "forget_preference", "get_preferences", "end_session"}
+SETUP_TOOLS = {"finish_setup"}
+DICTATION_TOOLS = {"add_to_dictated_recipe", "remove_from_dictated_recipe", "read_dictated_recipe",
+                   "save_dictated_recipe", "discard_dictated_recipe"}
+RECIPE_TOOLS = STEP_TOOLS | {"start_step_timer", "list_ingredients", "scale_servings", "substitute_ingredient",
+                             "save_recipe"}
+
 log = logging.getLogger(__name__)
 
 
@@ -162,6 +171,19 @@ class ToolBox:
     # -- public ------------------------------------------------------------
     def specs(self) -> list[ToolSpec]:
         return [t.spec() for t in self._tools.values()]
+
+    def specs_for(self, session: CookingSession) -> list[ToolSpec]:
+        """Only the tools that fit the moment: fewer to read means a faster,
+        more accurate choice from a small local model. Registry order is kept
+        so the prompt prefix stays the same from turn to turn."""
+        offered = set(ALWAYS_TOOLS)
+        if session.setup_pending:
+            offered |= SETUP_TOOLS
+        if session.draft is not None:
+            offered |= DICTATION_TOOLS
+        if session.recipe is not None:
+            offered |= RECIPE_TOOLS
+        return [t.spec() for name, t in self._tools.items() if name in offered]
 
     @property
     def names(self) -> list[str]:
