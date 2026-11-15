@@ -336,7 +336,13 @@ said, it tells you.
 **Safety check.** Every recipe's ingredients are also checked in code against
 your allergies and conditions, with common families (tree nuts, shellfish,
 dairy, gluten...) and look-alikes that are fine (coconut milk, rice flour,
-nutmeg, eggplant):
+nutmeg, eggplant). Vegetarian, vegan and Jain diets are checked the same way
+(vegetarian: no meat, fish, eggs, gelatin or meat stock; vegan: also no dairy,
+ghee or honey; Jain: vegetarian, no honey, no onion, garlic, potato, ginger
+or other root vegetables), both when they're saved in your profile and when
+you ask for one just this once ("vegan kheer"). For a diet, a request that
+names the ingredient itself wins ("chicken biryani, just this once");
+allergies and conditions are never overridden.
 
 * a generated recipe that still contains something you can't have is sent back
   once to be rewritten; if it still conflicts, you get a spoken warning;

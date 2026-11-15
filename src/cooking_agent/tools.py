@@ -20,8 +20,8 @@ from pydantic import BaseModel, Field, ValidationError
 
 from .providers.base import LLMProvider, ToolCall, ToolResult, ToolSpec
 from .recipe import Ingredient, Recipe, Step, format_minutes, parse_ingredient_line
-from .dietary import find_conflicts
-from .preferences import CATEGORIES, PreferenceStore, describe_for_recipe
+from .dietary import DIETS, find_conflicts
+from .preferences import CATEGORIES, PreferenceStore, describe_for_recipe, diets_in
 from .recipe_store import RecipeStore
 from .state import Awaiting, CookingPhase, CookingSession, InvalidTransition, RecipeDraft
 from .timers import TimerError, TimerManager
@@ -317,13 +317,14 @@ class ToolBox:
         servings, servings_learned = a.servings, False
         if servings is None and self.prefs and (usual := self.prefs.default_servings()):
             servings, servings_learned = usual, True
+        request = " ".join(filter(None, [a.dish, a.constraints]))  # what the cook asked for, for diet checks
         saved = self._find_saved(a)
         if saved is not None:
             self._loaded(saved.recipe, "recipe book", request_id)
             if servings and servings != saved.recipe.servings:
                 self.session.scale_servings(servings)
             out = self._recipe_summary(saved.recipe) | {"source": "your recipe book"}
-            if warnings := self._warnings(saved.recipe):
+            if warnings := self._warnings(saved.recipe, request):
                 out["warnings"] = warnings  # their own recipe: warn, never change it silently
         else:
             profile = self._profile()
@@ -333,7 +334,7 @@ class ToolBox:
                 constraints=f"Constraints: {a.constraints}.\n" if a.constraints else "",
                 profile=describe_for_recipe(profile),
             )
-            recipe, warnings = await self._write_recipe(prompt)
+            recipe, warnings = await self._write_recipe(prompt, request)
             self._loaded(recipe, "generated", request_id)
             if servings and servings != recipe.servings:  # the model ignored the requested servings
                 self.session.scale_servings(servings)
@@ -347,11 +348,11 @@ class ToolBox:
             out["servings_note"] = f"made for {servings}, the number you usually cook for"
         return out
 
-    async def _write_recipe(self, prompt: str) -> tuple[Recipe, list[str]]:
+    async def _write_recipe(self, prompt: str, request: str = "") -> tuple[Recipe, list[str]]:
         """Have the LLM write a recipe; if it includes something the cook's
-        allergies or conditions rule out, send it back once to fix."""
+        allergies, conditions or diet rule out, send it back once to fix."""
         recipe = await self.llm.generate_structured(prompt, Recipe)
-        conflicts = self._conflicts([i.name for i in recipe.ingredients])
+        conflicts = self._conflicts([i.name for i in recipe.ingredients], request)
         if not conflicts:
             return recipe, []
         log.warning("generated recipe conflicts with the cook's profile: %s", [c.message() for c in conflicts])
@@ -359,21 +360,30 @@ class ToolBox:
                  f"{'; '.join(c.message() for c in conflicts)}. This cook must not have these. "
                  "Rewrite the whole recipe without them, using safe substitutes.")
         recipe = await self.llm.generate_structured(retry, Recipe)
-        conflicts = self._conflicts([i.name for i in recipe.ingredients])
+        conflicts = self._conflicts([i.name for i in recipe.ingredients], request)
         return recipe, [self._warning_text(c) for c in conflicts]
 
-    def _conflicts(self, names: list[str]):
+    def _diets(self, profile: dict, request: str) -> list[str]:
+        """Diets to check: stated ones plus any named in the request ("vegan,
+        for four"), minus any the request itself overrides ("chicken biryani,
+        just this once"): for diet, what the cook asks for in the moment wins."""
+        wanted = diets_in(" ".join(profile.get("diet", []))) | diets_in(request)
+        return sorted(d for d in wanted if d in DIETS and not find_conflicts([request], diets=[d]))
+
+    def _conflicts(self, names: list[str], request: str = ""):
         p = self._profile()
-        if not (p.get("allergy") or p.get("condition")):
+        diets = self._diets(p, request)
+        if not (p.get("allergy") or p.get("condition") or diets):
             return []
-        return find_conflicts(names, allergies=p.get("allergy", []), conditions=p.get("condition", []))
+        return find_conflicts(names, allergies=p.get("allergy", []), conditions=p.get("condition", []),
+                              diets=diets)
 
     @staticmethod
     def _warning_text(c) -> str:
         return f"contains {c.message()}"
 
-    def _warnings(self, recipe: Recipe) -> list[str]:
-        return [self._warning_text(c) for c in self._conflicts([i.name for i in recipe.ingredients])]
+    def _warnings(self, recipe: Recipe, request: str = "") -> list[str]:
+        return [self._warning_text(c) for c in self._conflicts([i.name for i in recipe.ingredients], request)]
 
     def _finish_setup(self, a: FinishSetupArgs) -> dict:
         if self.prefs is None:

@@ -163,3 +163,98 @@ def test_cli_setup_by_typing(tmp_path, monkeypatch, capsys):
     assert not prefs.needs_setup()
     assert prefs.profile() == {"allergy": ["peanuts"], "condition": ["lactose intolerance", "diabetes"],
                                "pantry": ["paneer"]}
+
+
+# ------------------------------------------------------------------ diets (vegetarian, vegan, Jain)
+from cooking_agent.dietary import diet_hint  # noqa: E402
+
+
+def diet_flagged(names, diet):
+    return [(c.ingredient, c.reason) for c in find_conflicts(names, diets=[diet])]
+
+
+def test_vegetarian_flags_meat_fish_egg():
+    out = diet_flagged(["chicken stock", "2 eggs", "fish sauce", "gelatin"], "vegetarian")
+    assert [i for i, _ in out] == ["chicken stock", "2 eggs", "fish sauce", "gelatin"]
+    assert {r for _, r in out} == {"vegetarian diet"}
+
+
+def test_vegetarian_lookalikes_ok():
+    assert diet_flagged(["chickpeas", "eggplant", "vegetable stock", "eggless mayonnaise", "paneer"],
+                        "vegetarian") == []
+
+
+def test_vegan_flags_dairy_ghee_honey():
+    assert [i for i, _ in diet_flagged(["ghee", "honey", "paneer"], "vegan")] == ["ghee", "honey", "paneer"]
+    assert diet_flagged(["coconut milk", "oat milk", "tofu"], "vegan") == []
+
+
+def test_vegan_plant_exemption_does_not_hide_meat():
+    # "rice" makes "rice milk" fine for the dairy rule, but must not excuse chicken
+    assert [i for i, _ in diet_flagged(["chicken fried rice"], "vegan")] == ["chicken fried rice"]
+
+
+def test_jain_flags_root_vegetables():
+    assert [i for i, _ in diet_flagged(["onion", "garlic", "potato", "ginger"], "jain")] == \
+        ["onion", "garlic", "potato", "ginger"]
+    assert diet_flagged(["dry ginger powder", "tomato", "paneer"], "jain") == []
+
+
+def test_diet_names_are_case_insensitive():
+    assert diet_flagged(["beef"], "Vegetarian") == [("beef", "Vegetarian diet")]
+
+
+def test_diet_hint():
+    hint = diet_hint("vegan")
+    assert hint.startswith("vegan (") and "dairy" in hint and "honey" in hint
+    assert diet_hint("keto") == "keto"
+
+
+def test_recipe_writer_gets_diet_rules():
+    assert "no meat" in describe_for_recipe({"diet": ["vegetarian"]})
+
+
+def diet_box(tmp_path, llm, diet=None, allergy=None):
+    path = tmp_path / "book.db"
+    prefs = PreferenceStore(path)
+    if diet:
+        prefs.remember("diet", diet)
+    if allergy:
+        prefs.remember("allergy", allergy)
+    return ToolBox(CookingSession(), TimerManager(on_fire=lambda n: None), llm,
+                   store=RecipeStore(path), prefs=prefs)
+
+
+async def test_generated_meat_rewritten_for_vegetarian(tmp_path):
+    llm = SequenceLLM([dish("chicken", "rice"), dish("paneer", "rice")])
+    out = await call(diet_box(tmp_path, llm, diet="vegetarian"), "get_recipe", dish="biryani")
+    assert len(llm.prompts) == 2
+    assert "chicken (conflicts with vegetarian diet)" in llm.prompts[1]
+    assert "warnings" not in out
+
+
+async def test_request_overrides_diet(tmp_path):
+    llm = SequenceLLM([dish("chicken", "rice")])
+    out = await call(diet_box(tmp_path, llm, diet="vegetarian"), "get_recipe", dish="chicken biryani")
+    assert len(llm.prompts) == 1 and "warnings" not in out
+
+
+async def test_one_off_vegan_constraint_checked(tmp_path):
+    llm = SequenceLLM([dish("ghee", "rice"), dish("coconut oil", "rice")])
+    await call(diet_box(tmp_path, llm), "get_recipe", dish="kheer", constraints="vegan")
+    assert len(llm.prompts) == 2 and "ghee (conflicts with vegan diet)" in llm.prompts[1]
+
+
+async def test_saved_recipe_diet_warning(tmp_path):
+    box = diet_box(tmp_path, SequenceLLM([dish("rice")]), diet="vegetarian")
+    box.store.add(dish("chicken", "rice").model_copy(update={"title": "Mum's Special"}))
+    out = await call(box, "get_recipe", dish="mum's special")
+    assert out["source"] == "your recipe book"
+    assert out["warnings"] == ["contains chicken (conflicts with vegetarian diet)"]
+    assert [i.name for i in box.session.recipe.ingredients] == ["chicken", "rice"]
+
+
+async def test_allergy_never_overridden_by_request(tmp_path):
+    llm = SequenceLLM([dish("peanuts", "jaggery"), dish("sesame", "jaggery")])
+    await call(diet_box(tmp_path, llm, allergy="peanuts"), "get_recipe", dish="peanut chikki")
+    assert len(llm.prompts) == 2

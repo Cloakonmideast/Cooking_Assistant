@@ -5,6 +5,32 @@ says what was done, why, and how it was checked.
 
 ---
 
+## 2026-11-16 — Task 6: diets checked in code (vegetarian, vegan, Jain)
+
+* `dietary.py`: new diet rules, checked exactly like allergies:
+  * vegetarian: no meat, poultry, fish, seafood, eggs, gelatin, meat/fish
+    stock (eggplant, eggless mayo, chickpeas, vegetable stock are fine);
+  * vegan: also no dairy, ghee or honey (plant milks are fine);
+  * Jain: vegetarian, no honey, no onion, garlic, potato, carrot, ginger or
+    other root vegetables (dry ginger powder is fine).
+
+  Each diet's exceptions apply only to their own part, so "rice" excuses
+  "rice milk" from the dairy rule but never "chicken fried rice".
+* `tools.py`: a generated recipe that breaks your diet is sent back once to
+  be rewritten, then you're warned if it still does; your own saved recipes
+  are never changed, only warned about. Diets checked are the ones saved in
+  your profile plus any named in the request ("vegan kheer"). As the README
+  always promised, the request wins for a diet when it names the ingredient
+  itself ("chicken biryani"); allergies and conditions are never skipped.
+* `preferences.py`: the recipe instructions now spell out what the diet
+  means ("Diet: vegetarian (no meat, poultry, fish, ...)").
+* Decision: vegetarian excludes eggs (Indian usage, matching this app's
+  recipes). Habits the app has only learned are not code-checked.
+* README "Safety check" paragraph updated.
+* Tests: 14 new (failed first, then passed); suite 267/267.
+
+---
+
 ## 2026-11-16 — Task 5: the AI is offered only the actions that fit the moment
 
 * `tools.py`: new `ToolBox.specs_for(session)`. Instead of all 24 actions

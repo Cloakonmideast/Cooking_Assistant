@@ -27,7 +27,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from .dietary import condition_hint, find_conflicts
+from .dietary import DIETS, condition_hint, diet_hint, find_conflicts
 
 CATEGORIES = ("allergy", "condition", "diet", "dislike", "like", "pantry", "other")
 
@@ -197,6 +197,12 @@ class PreferenceStore:
         return self.learned().get("usually_cooks_for")
 
 
+def _diet_rule(stated: str) -> str:
+    """'vegetarian' -> 'vegetarian (no meat, poultry, fish, ...)'; unknown diets as said."""
+    known = sorted(diets_in(stated) & DIETS.keys())
+    return diet_hint(known[0]) if known else stated
+
+
 def describe_for_recipe(profile: dict) -> str:
     """Instructions for the recipe writer, built from ``profile()``."""
     if not profile:
@@ -214,7 +220,7 @@ def describe_for_recipe(profile: dict) -> str:
         lines.append("- HEALTH CONDITIONS, treat as strict rules for every ingredient: "
                      + "; ".join(condition_hint(c) for c in profile["condition"]) + ".")
     if profile.get("diet"):
-        lines.append(f"- Diet: {', '.join(profile['diet'])}.")
+        lines.append(f"- Diet: {'; '.join(_diet_rule(d) for d in profile['diet'])}.")
     if profile.get("dislike"):
         lines.append(f"- Leave out (dislikes): {', '.join(profile['dislike'])}.")
     if profile.get("like"):
