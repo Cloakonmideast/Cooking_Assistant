@@ -70,7 +70,11 @@ async def test_tts_starts_before_llm_finishes(recipe):
 async def test_timer_announcement_is_spliced_into_active_reply(recipe):
     agent, _, tts, _ = make_agent(recipe, llm_delay=0.02)
     announcer = asyncio.create_task(agent._announcer())
-    agent.timers.set("pasta", 0.15)  # fires after sentence 1, while the reply is still generating
+    # Fires after sentence 1, while the reply is still generating. The reply is
+    # 22 words at 0.02 s each; on Windows asyncio.sleep(0.02) really takes ~30 ms,
+    # so sentence 1 (5 words) is ready at ~100 ms (Linux/macOS) to ~170 ms
+    # (Windows) and the reply ends at ~440-700 ms. 0.3 s sits safely between.
+    agent.timers.set("pasta", 0.3)
     await agent.submit_text("tell me something long")
     announcer.cancel()
     assert "Your pasta timer is done." in tts.spoken

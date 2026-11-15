@@ -179,7 +179,7 @@ async def test_audio_or_video_file_is_transcribed(tmp_path):
 
 async def test_pasted_caption_in_a_text_file(tmp_path):
     f = tmp_path / "reel.txt"
-    f.write_text(CAPTION)
+    f.write_text(CAPTION, encoding="utf-8")
     res = await import_recipe(str(f), llm=FakeLLM(GOOD))
     assert res.how == "the text file" and res.recipe.title == "Jeera rice"
 
@@ -187,7 +187,7 @@ async def test_pasted_caption_in_a_text_file(tmp_path):
 async def test_page_without_recipe_data_falls_back_to_its_text(tmp_path):
     page = tmp_path / "blog.html"
     page.write_text("<html><script>var x=1</script><body><h1>My jeera rice</h1><p>"
-                    + CAPTION.replace("\n", "<br>") + "</p></body></html>")
+                    + CAPTION.replace("\n", "<br>") + "</p></body></html>", encoding="utf-8")
     llm = FakeLLM(GOOD)
     res = await import_recipe(str(page), llm=llm)
     assert res.how == "the text of the saved web page"
