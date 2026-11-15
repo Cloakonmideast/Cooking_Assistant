@@ -22,7 +22,7 @@
 | 6. Diet check in code (vegetarian, vegan, Jain) | done |
 | 7. Choose the model by measuring (routing, speed, diet test) | done |
 | 8. Eggetarian diet | done |
-| 9. Questions and changes mid-recipe | not started |
+| 9. Questions and changes mid-recipe | done |
 | 10. Learn and use everything the cook prefers | not started |
 | 11. Keep the model loaded (15-min and pre-timer pings) | not started |
 | 12. Understanding test (questions, changes, commands) | not started |

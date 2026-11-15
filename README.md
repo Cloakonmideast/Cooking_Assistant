@@ -203,6 +203,8 @@ loop), `sqlite3` (recipe book), `urllib` (fetching recipe pages), `argparse`
 | `list_ingredients` | "What do I need?" |
 | `scale_servings` | "Make it for six people." |
 | `substitute_ingredient` | "I don't have ghee, what can I use?" |
+| `change_recipe` | Mid-recipe: "Skip the cashews." "Add some peas." "Make it less spicy." "Double the garlic." "Fry it for 5 minutes instead." (the current step is kept; steps that mention a removed ingredient are reworded) |
+| *(no tool)* | Questions about the dish, answered from the recipe you're cooking: "How do I know the rice is done?" "Why do we soak it?" "Can I use brown rice?" |
 | `set_timer` / `cancel_timer` / `list_timers` | "Set a rice timer for 12 minutes." "How long is left?" "Stop the pasta timer." |
 | `list_saved_recipes` / `save_recipe` | "What recipes do I have?" "Save this one." |
 | `start_recipe_dictation` and friends | "I want to save my own recipe, Mum's dal, serves four." |

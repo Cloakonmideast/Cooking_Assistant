@@ -5,6 +5,41 @@ says what was done, why, and how it was checked.
 
 ---
 
+## 2026-11-16 — Phase 2, Task 9: questions and changes mid-recipe
+
+* **Questions about the dish** ("how do I know the rice is done?", "can I use
+  brown rice?") are answered from the actual recipe: the state the model sees
+  every turn now has `recipe_text` (title, servings, ingredient lines at the
+  current servings, numbered steps with `[current step]` marked). The prompt
+  says to answer without a tool and stay on the same step.
+* **Changes** use a new tool, `change_recipe` (offered only while a recipe is
+  loaded), with four actions:
+  * `remove_ingredient` ("skip the cashews"): whole-word matching, so "ice"
+    no longer finds "rice"; the last ingredient can't be removed. It returns
+    the steps from the current one on that mention it (`steps_to_update`),
+    and the model rewrites them with `change_step` in the same turn, because
+    steps are read out word for word.
+  * `add_ingredient` ("add some peas", "1 cup").
+  * `change_amount` ("2 tbsp", or double / half / more / less; "make it less
+    spicy" means less chilli). Amounts are taken at the servings being
+    cooked now and stored at the recipe's own servings, so rescaling still
+    works. An imported line's verbatim text is dropped once changed, so the
+    new amount is what gets read.
+  * `change_step`: new wording for a step (current step by default). Any time
+    in the new wording becomes the step's timer offer.
+* Added or increased ingredients are checked against allergies, conditions
+  and diets. The dish the cook asked for still wins for a diet ("chicken
+  biryani" then "add more chicken" isn't flagged); `substitute_ingredient`
+  now uses the same rule.
+* The current step never moves on a change or question; the instant command
+  matcher ignores these phrases (tested).
+* README tool table updated.
+* Checked: 20 new tests in `tests/test_mid_recipe.py` (14 failed first; the 6
+  matcher guards already passed), two existing tests updated for the new
+  snapshot key and tool count; full suite 348 passed.
+
+---
+
 ## 2026-11-16 — Phase 2, Task 8: eggetarian diet
 
 * New diet **eggetarian** (`dietary.py`): everything a vegetarian avoids except

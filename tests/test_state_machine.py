@@ -81,7 +81,10 @@ def test_snapshot(recipe):
     assert s.snapshot() == {"phase": "no_recipe"}
     s.load_recipe(recipe)
     s.next_step()
-    assert s.snapshot() == {"phase": "cooking", "recipe": "Jeera Rice", "servings": 2, "step": 1, "total_steps": 3,
+    assert "Jeera Rice, for 2" in s.snapshot().pop("recipe_text")
+    snap = s.snapshot()
+    del snap["recipe_text"]
+    assert snap == {"phase": "cooking", "recipe": "Jeera Rice", "servings": 2, "step": 1, "total_steps": 3,
                             "current_step_timer": "20 minutes"}
 
 

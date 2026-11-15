@@ -36,7 +36,7 @@ SETUP_TOOLS = {"finish_setup"}
 DICTATION_TOOLS = {"add_to_dictated_recipe", "remove_from_dictated_recipe", "read_dictated_recipe",
                    "save_dictated_recipe", "discard_dictated_recipe"}
 RECIPE_TOOLS = STEP_TOOLS | {"start_step_timer", "list_ingredients", "scale_servings", "substitute_ingredient",
-                             "save_recipe"}
+                             "change_recipe", "save_recipe"}
 
 log = logging.getLogger(__name__)
 
@@ -121,6 +121,20 @@ class SubstituteArgs(BaseModel):
     note: Optional[str] = Field(default=None, description="Short usage note, e.g. 'add with the onions'.")
 
 
+class ChangeRecipeArgs(BaseModel):
+    action: Literal["add_ingredient", "remove_ingredient", "change_amount", "change_step"] = Field(description=(
+        "remove_ingredient: leave something out. add_ingredient: put something extra in. change_amount: more or "
+        "less of an ingredient. change_step: new wording for a step."))
+    ingredient: Optional[str] = Field(default=None, description="The ingredient, e.g. 'cashews', 'green peas'.")
+    amount: Optional[str] = Field(default=None, description=(
+        "For add_ingredient and change_amount: an amount for the servings being cooked now, e.g. '1 cup', "
+        "'2 tbsp', or for change_amount 'double', 'half', 'more', 'less'."))
+    step_number: Optional[int] = Field(default=None, ge=1, description="For change_step; defaults to the current step.")
+    text: Optional[str] = Field(default=None, description="For change_step: the whole new step, one or two short "
+                                "sentences, keeping any time, e.g. 'Fry the onions for 5 minutes.'")
+    reason: Optional[str] = Field(default=None, description="Why, in the cook's words, e.g. 'less spicy'.")
+
+
 # ------------------------------------------------------------------ registry
 Handler = Callable[[Any], Awaitable[dict]]
 
@@ -163,6 +177,7 @@ class ToolBox:
         self.store = store
         self.prefs = prefs
         self._request_id: Optional[int] = None  # get_recipe request behind the loaded recipe
+        self._request = ""  # what the cook asked for when the recipe was loaded (dish + constraints)
         self._cook_recorded = True  # nothing loaded yet, nothing to record
         self.end_requested = False
         self._tools: dict[str, Tool] = {}
@@ -301,6 +316,10 @@ class ToolBox:
                  ScaleArgs, self._wrap(lambda a: s.scale_servings(a.servings))),
             Tool("substitute_ingredient", "Replace an ingredient in the current recipe with a substitute you choose.",
                  SubstituteArgs, self._wrap(self._substitute)),
+            Tool("change_recipe", "Change the loaded recipe when the cook asks to leave something out, add "
+                 "something, use more or less of something, or do a step differently. Keeps the current step. "
+                 "For swapping one ingredient for another use substitute_ingredient instead.",
+                 ChangeRecipeArgs, self._wrap(self._change_recipe)),
             Tool("end_session", "End the conversation. Only when the user clearly wants to quit the assistant "
                  "(not when they want to stop a timer or stop talking).",
                  NoArgs, self._end_session),
@@ -321,7 +340,7 @@ class ToolBox:
         request = " ".join(filter(None, [a.dish, a.constraints]))  # what the cook asked for, for diet checks
         saved = self._find_saved(a)
         if saved is not None:
-            self._loaded(saved.recipe, "recipe book", request_id)
+            self._loaded(saved.recipe, "recipe book", request_id, request)
             if servings and servings != saved.recipe.servings:
                 self.session.scale_servings(servings)
             out = self._recipe_summary(saved.recipe) | {"source": "your recipe book"}
@@ -336,7 +355,7 @@ class ToolBox:
                 profile=describe_for_recipe(profile),
             )
             recipe, warnings = await self._write_recipe(prompt, request)
-            self._loaded(recipe, "generated", request_id)
+            self._loaded(recipe, "generated", request_id, request)
             if servings and servings != recipe.servings:  # the model ignored the requested servings
                 self.session.scale_servings(servings)
             out = self._recipe_summary(recipe) | {"source": "newly written, not from the recipe book"}
@@ -395,10 +414,11 @@ class ToolBox:
         self.session.setup_pending = False
         return {"setup_done": True, "skipped": a.skipped, "profile": self.prefs.profile()}
 
-    def _loaded(self, recipe: Recipe, source: str, request_id: Optional[int]) -> None:
+    def _loaded(self, recipe: Recipe, source: str, request_id: Optional[int], request: str = "") -> None:
         self.session.load_recipe(recipe)
         self.session.recipe_source = source
         self._request_id, self._cook_recorded = request_id, False
+        self._request = request
 
     # -- preferences -------------------------------------------------------
     def _profile(self) -> dict:
@@ -548,7 +568,31 @@ class ToolBox:
     def _substitute(self, a: SubstituteArgs) -> dict:
         repl = Ingredient(name=a.replacement, quantity=a.quantity, unit=a.unit, note=a.note)
         out = self.session.substitute(a.ingredient, repl)
-        if conflicts := self._conflicts([a.replacement]):
+        if conflicts := self._conflicts([a.replacement], self._request):
+            out["warnings"] = [self._warning_text(c) for c in conflicts]
+        return out
+
+    def _change_recipe(self, a: ChangeRecipeArgs) -> dict:
+        s = self.session
+        if a.action == "change_step":
+            return s.change_step(a.step_number, a.text or "")
+        if not a.ingredient:
+            raise InvalidTransition("Tell me which ingredient to change.")
+        if a.action == "remove_ingredient":
+            out = s.remove_ingredient(a.ingredient)
+            if not out["steps_to_update"]:
+                del out["steps_to_update"]
+            return out
+        if a.action == "add_ingredient":
+            out = s.add_ingredient(f"{a.amount} {a.ingredient}" if a.amount else a.ingredient)
+        else:
+            if not a.amount:
+                raise InvalidTransition(f"How much {a.ingredient}? For example '2 tablespoons', 'double' or 'half'.")
+            out = s.change_amount(a.ingredient, a.amount)
+            more = out.pop("more")
+            if not more:
+                return out
+        if conflicts := self._conflicts([out["ingredient"]], self._request):
             out["warnings"] = [self._warning_text(c) for c in conflicts]
         return out
 

@@ -103,7 +103,7 @@ async def test_end_session_only_via_tool(box):
 ALWAYS = ["get_recipe", "list_saved_recipes", "start_recipe_dictation", "remember_preference",
           "forget_preference", "get_preferences", "set_timer", "cancel_timer", "list_timers", "end_session"]
 COOKING = ["save_recipe", "start_step_timer", "next_step", "previous_step", "repeat_step", "list_ingredients",
-           "scale_servings", "substitute_ingredient"]
+           "scale_servings", "substitute_ingredient", "change_recipe"]
 DICTATION = ["add_to_dictated_recipe", "remove_from_dictated_recipe", "read_dictated_recipe",
              "save_dictated_recipe", "discard_dictated_recipe"]
 
@@ -119,7 +119,7 @@ def test_specs_no_recipe(box):
 def test_specs_cooking(box, recipe):
     box.session.load_recipe(recipe)
     got = names_for(box)
-    assert sorted(got) == sorted(ALWAYS + COOKING) and len(got) == 18
+    assert sorted(got) == sorted(ALWAYS + COOKING) and len(got) == 19
     assert "finish_setup" not in got
 
 

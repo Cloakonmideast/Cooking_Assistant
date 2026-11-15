@@ -78,6 +78,22 @@ problem, take your time.") and call nothing.
 - "Stop" or "cancel" about a timer means cancel_timer, never end_session. \
 Only call end_session if the cook clearly wants to quit the assistant.
 
+During a recipe:
+- recipe_text in the state is the recipe as the cook has it now, with \
+[current step] marked. Answer questions about the dish ("how do I know it's \
+done?", "why do we soak it?", "can I use brown rice?") from it in one or two \
+sentences, calling no tool, and stay on the same step.
+- When the cook asks to change the recipe (leave something out, add \
+something, more or less of something, do a step differently), call \
+change_recipe; to swap one ingredient for another, call \
+substitute_ingredient. "Make it less spicy" means change_amount less on the \
+chillies. Only change it when they ask for a change, not when they ask \
+whether they could.
+- If change_recipe returns steps_to_update, call change_recipe with \
+change_step for each of them in the same turn, rewriting the step without \
+the removed ingredient. Then confirm the change in one sentence.
+- A change never moves the step: do not call next_step after it.
+
 Recipes:
 - get_recipe checks the cook's saved recipe book first, then writes a new \
 recipe. Pass servings when the cook says how many people. Mention whether \

@@ -16,7 +16,32 @@ import enum
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-from .recipe import Ingredient, Recipe, Step, format_minutes
+import re
+
+from .recipe import Ingredient, Recipe, Step, format_minutes, parse_ingredient_line
+
+# Words that don't identify an ingredient on their own ("cumin seeds" is found by "cumin").
+_FILLER_WORDS = {"the", "a", "an", "some", "of", "any", "my", "this", "that", "few", "bit", "little"}
+_GENERIC_WORDS = {"seed", "powder", "leaf", "leave", "oil", "sauce", "paste", "nut", "fresh", "ground", "whole",
+                  "chopped", "dried", "green", "red", "white", "black", "large", "small"}
+# "double the garlic", "less salt": multipliers for change_amount.
+AMOUNT_WORDS = {"double": 2.0, "twice": 2.0, "triple": 3.0, "half": 0.5, "halve": 0.5,
+                "more": 1.5, "extra": 1.5, "less": 0.5}
+
+
+def _word_set(text: str) -> list[str]:
+    out = []
+    for w in re.findall(r"[a-z]+", text.lower()):
+        if w in _FILLER_WORDS:
+            continue
+        if w.endswith("ies") and len(w) > 4:
+            w = w[:-3] + "y"
+        elif w.endswith(("ches", "shes", "oes")):
+            w = w[:-2]
+        elif w.endswith("s") and not w.endswith("ss") and len(w) > 3:
+            w = w[:-1]
+        out.append(w)
+    return out
 
 
 class InvalidTransition(RuntimeError):
@@ -201,6 +226,118 @@ class CookingSession:
         self.substitutions.append(record)
         return {**record, "line": new.describe(self.scale_factor)}
 
+    # -- changes asked for mid-recipe (change_recipe) -----------------------
+    def find_ingredient_words(self, query: str) -> Optional[int]:
+        """Whole-word match: "cumin" finds "cumin seeds", "ice" doesn't find "rice"."""
+        recipe = self._require_recipe()
+        q = _word_set(query)
+        if not q:
+            return None
+        names = [_word_set(i.name) for i in recipe.ingredients]
+        for i, n in enumerate(names):
+            if n == q:
+                return i
+        for i, n in enumerate(names):
+            if set(q) <= set(n) or (n and set(n) <= set(q)):
+                return i
+        return None
+
+    def _require_ingredient(self, query: str) -> int:
+        idx = self.find_ingredient_words(query)
+        if idx is None:
+            names = ", ".join(i.name for i in self._require_recipe().ingredients)
+            raise InvalidTransition(f"I can't find {query} in this recipe. Ingredients are: {names}.")
+        return idx
+
+    def steps_mentioning(self, name: str) -> list[dict]:
+        """Steps from the current one on that mention the ingredient, so the
+        assistant can rewrite them (steps are read out word for word)."""
+        recipe = self._require_recipe()
+        keys = {w for w in _word_set(name) if w not in _GENERIC_WORDS} or set(_word_set(name))
+        first = self.step_index if self.phase is CookingPhase.COOKING else 0
+        out = []
+        for n, step in enumerate(recipe.steps[first:], start=first + 1):
+            if keys & set(_word_set(step.instruction)):
+                out.append({"step_number": n, "instruction": step.instruction})
+        return out
+
+    def remove_ingredient(self, query: str) -> dict:
+        recipe = self._require_recipe()
+        idx = self._require_ingredient(query)
+        if len(recipe.ingredients) == 1:
+            raise InvalidTransition("That's the only ingredient left, so I can't take it out.")
+        removed = recipe.ingredients.pop(idx)
+        return {"removed": removed.describe(self.scale_factor), "ingredient": removed.name,
+                "steps_to_update": self.steps_mentioning(removed.name)}
+
+    def add_ingredient(self, line: str) -> dict:
+        """``line`` is said at the current servings ("1 cup peas" for 4)."""
+        recipe = self._require_recipe()
+        ing = parse_ingredient_line(line)
+        if ing.quantity is not None:
+            ing = ing.model_copy(update={"quantity": ing.quantity / self.scale_factor})
+        ing = ing.model_copy(update={"original": None})
+        recipe.ingredients.append(ing)
+        return {"added": ing.describe(self.scale_factor), "ingredient": ing.name}
+
+    def change_amount(self, query: str, amount: str) -> dict:
+        """``amount``: "2 tbsp" (at the current servings), or double/half/more/less."""
+        recipe = self._require_recipe()
+        idx = self._require_ingredient(query)
+        ing = recipe.ingredients[idx]
+        factor = next((AMOUNT_WORDS[w] for w in _word_set(amount) if w in AMOUNT_WORDS), None)
+        if factor is not None:
+            if ing.quantity is None:
+                note = "a little more than usual" if factor > 1 else "a little less than usual"
+                new = ing.model_copy(update={"note": note, "original": None})
+            else:
+                new = ing.model_copy(update={"quantity": ing.quantity * factor, "original": None})
+            more = factor > 1
+        else:
+            parsed = parse_ingredient_line(f"{amount} {ing.name}")
+            if parsed.quantity is None:
+                raise InvalidTransition(f"Say an amount for {ing.name}, like '2 tablespoons', 'double' or 'half'.")
+            new = ing.model_copy(update={"quantity": parsed.quantity / self.scale_factor,
+                                         "unit": parsed.unit or ing.unit, "original": None})
+            more = ing.quantity is None or new.quantity > ing.quantity
+        recipe.ingredients[idx] = new
+        return {"ingredient": new.name, "was": ing.describe(self.scale_factor),
+                "line": new.describe(self.scale_factor), "more": more}
+
+    def change_step(self, step_number: Optional[int], text: str) -> dict:
+        recipe = self._require_recipe()
+        if step_number is None:
+            if self.phase is not CookingPhase.COOKING:
+                raise InvalidTransition("Tell me which step number to change.")
+            step_number = self.step_index + 1
+        if not 1 <= step_number <= len(recipe.steps):
+            raise InvalidTransition(f"There are only {len(recipe.steps)} steps.")
+        if not text.strip():
+            raise InvalidTransition("Tell me what the step should say.")
+        step = Step(instruction=text.strip())  # re-reads any time in the new wording
+        recipe.steps[step_number - 1] = step
+        self.timed_steps.discard(step_number)
+        out: dict = {"step_number": step_number, "instruction": step.instruction}
+        if self.phase is CookingPhase.COOKING and step_number == self.step_index + 1:
+            if step.timer_minutes:
+                self.timer_offer = {"minutes": step.timer_minutes, "step_number": step_number}
+                out["suggested_timer_minutes"] = step.timer_minutes
+            else:
+                self.timer_offer = None
+        return out
+
+    def recipe_text(self) -> str:
+        """The whole recipe as the cook currently has it, for answering
+        questions about the dish."""
+        recipe = self._require_recipe()
+        lines = [f"{recipe.title}, for {self.target_servings}.",
+                 "Ingredients: " + "; ".join(self.ingredient_lines()), "Steps:"]
+        current = self.step_index if self.phase is CookingPhase.COOKING else None
+        for n, step in enumerate(recipe.steps):
+            mark = "[current step] " if n == current else ""
+            lines.append(f"{n + 1}. {mark}{step.instruction}")
+        return "\n".join(lines)
+
     def _find_ingredient(self, query: str) -> Optional[int]:
         recipe = self._require_recipe()
         q = query.lower().strip()
@@ -222,6 +359,7 @@ class CookingSession:
                 "servings": self.target_servings,
                 "step": (self.step_index + 1) if self.step_index >= 0 else None,
                 "total_steps": len(self.recipe.steps),
+                "recipe_text": self.recipe_text(),
             })
             if self.recipe_source:
                 out["recipe_source"] = self.recipe_source

@@ -1,0 +1,190 @@
+"""Questions and changes in the middle of a recipe (Phase 2, Task 9)."""
+
+import pytest
+
+from cooking_agent.agent import AgentConfig, CookingAgent
+from cooking_agent.audio import SimulatedSink
+from cooking_agent.commands import match_command
+from cooking_agent.preferences import PreferenceStore
+from cooking_agent.providers.base import ToolCall
+from cooking_agent.providers.fake import QueueSTT, ScriptedLLM, ToneTTS
+from cooking_agent.recipe import Recipe, Step, parse_ingredient_line
+from cooking_agent.state import CookingPhase, CookingSession
+from cooking_agent.timers import TimerManager
+from cooking_agent.tools import ToolBox
+
+
+def make_box(recipe, prefs=None):
+    return ToolBox(CookingSession(), TimerManager(on_fire=lambda n: None), ScriptedLLM(recipe=recipe), prefs=prefs)
+
+
+async def call(tb, tool_name, /, **args):
+    return (await tb.dispatch(ToolCall(tool_name, args))).result
+
+
+async def on_step_2(tb):
+    await call(tb, "get_recipe", dish="jeera rice")
+    await call(tb, "next_step")
+    await call(tb, "next_step")
+    assert tb.session.step_index == 1
+
+
+# ------------------------------------------------------------ the recipe in the state
+def test_snapshot_includes_recipe_text_and_current_step(recipe):
+    s = CookingSession()
+    s.load_recipe(recipe)
+    text = s.snapshot()["recipe_text"]
+    assert "Jeera Rice, for 2" in text and "1 cup basmati rice, rinsed" in text
+    assert "[current step]" not in text  # not cooking yet
+    s.next_step()
+    s.next_step()
+    text = s.snapshot()["recipe_text"]
+    assert "2. [current step] Heat ghee and add cumin seeds." in text
+    assert "1. Soak the rice for 20 minutes." in text
+    s.scale_servings(4)
+    assert "2 cups basmati rice" in s.snapshot()["recipe_text"]
+
+
+# ------------------------------------------------------------ change_recipe
+async def test_change_recipe_remove_add_amount_keeps_step(recipe):
+    tb = make_box(recipe)
+    await on_step_2(tb)
+    out = await call(tb, "change_recipe", action="remove_ingredient", ingredient="cumin")
+    assert out["removed"] == "1 tsp cumin seeds"
+    assert out["steps_to_update"] == [{"step_number": 2, "instruction": "Heat ghee and add cumin seeds."}]
+    assert tb.session.step_index == 1
+    out = await call(tb, "change_recipe", action="add_ingredient", ingredient="green peas", amount="1 cup")
+    assert out["added"] == "1 cup green peas"
+    assert tb.session.step_index == 1
+    out = await call(tb, "change_recipe", action="change_amount", ingredient="ghee", amount="double")
+    assert out["line"] == "3 tbsp ghee"
+    assert tb.session.step_index == 1 and tb.session.phase is CookingPhase.COOKING
+    names = [i.name for i in tb.session.recipe.ingredients]
+    assert names == ["basmati rice", "ghee", "salt", "green peas"]
+
+
+async def test_amounts_are_spoken_at_current_servings(recipe):
+    tb = make_box(recipe)
+    await call(tb, "get_recipe", dish="jeera rice")
+    await call(tb, "scale_servings", servings=4)
+    out = await call(tb, "change_recipe", action="change_amount", ingredient="ghee", amount="2 tbsp")
+    assert out["line"] == "2 tbsp ghee"
+    out = await call(tb, "change_recipe", action="add_ingredient", ingredient="peas", amount="2 cups")
+    assert out["added"] == "2 cups peas"
+    lines = (await call(tb, "scale_servings", servings=2))["ingredients"]
+    assert "1 tbsp ghee" in lines and "1 cup peas" in lines
+
+
+async def test_less_and_more(recipe):
+    tb = make_box(recipe)
+    await call(tb, "get_recipe", dish="jeera rice")
+    assert (await call(tb, "change_recipe", action="change_amount", ingredient="cumin seeds",
+                       amount="less"))["line"] == "1/2 tsp cumin seeds"
+    assert (await call(tb, "change_recipe", action="change_amount", ingredient="salt", amount="more"))["line"] \
+        == "salt, a little more than usual"
+
+
+async def test_changed_imported_line_reads_new_amount(recipe):
+    imported = recipe.model_copy(update={"ingredients": [parse_ingredient_line("1 1/2 tbsp ghee"),
+                                                         parse_ingredient_line("1 cup basmati rice")]})
+    tb = make_box(imported)
+    await call(tb, "get_recipe", dish="jeera rice")
+    out = await call(tb, "change_recipe", action="change_amount", ingredient="ghee", amount="2 tbsp")
+    assert out["line"] == "2 tbsp ghee"
+
+
+async def test_change_recipe_added_allergen_warned(recipe):
+    prefs = PreferenceStore(":memory:")
+    prefs.remember("allergy", "peanuts")
+    tb = make_box(recipe, prefs)
+    await call(tb, "get_recipe", dish="jeera rice")
+    out = await call(tb, "change_recipe", action="add_ingredient", ingredient="roasted peanuts", amount="2 tbsp")
+    assert out["warnings"] == ["contains roasted peanuts (conflicts with peanuts allergy)"]
+
+
+async def test_dish_named_in_request_is_not_warned_on_change(recipe):
+    prefs = PreferenceStore(":memory:")
+    prefs.remember("diet", "vegetarian")
+    tb = make_box(recipe.model_copy(update={"title": "Chicken Rice"}), prefs)
+    await call(tb, "get_recipe", dish="chicken rice")
+    out = await call(tb, "change_recipe", action="add_ingredient", ingredient="chicken thighs", amount="200 g")
+    assert "warnings" not in out
+    out = await call(tb, "change_recipe", action="add_ingredient", ingredient="bacon", amount="2 slices")
+    assert out["warnings"] == ["contains bacon (conflicts with vegetarian diet)"]
+
+
+async def test_change_recipe_unknown_ingredient_lists_ingredients(recipe):
+    tb = make_box(recipe)
+    await call(tb, "get_recipe", dish="jeera rice")
+    out = await call(tb, "change_recipe", action="remove_ingredient", ingredient="cashews")
+    assert "can't find cashews" in out["error"] and "basmati rice, cumin seeds, ghee, salt" in out["error"]
+
+
+async def test_remove_matches_whole_words_only(recipe):
+    tb = make_box(recipe)
+    await call(tb, "get_recipe", dish="jeera rice")
+    assert "error" in await call(tb, "change_recipe", action="remove_ingredient", ingredient="ice")
+    assert (await call(tb, "change_recipe", action="remove_ingredient", ingredient="the rice"))["removed"] \
+        == "1 cup basmati rice, rinsed"
+
+
+async def test_cannot_remove_the_last_ingredient(recipe):
+    one = recipe.model_copy(update={"ingredients": recipe.ingredients[:1]})
+    tb = make_box(one)
+    await call(tb, "get_recipe", dish="jeera rice")
+    assert "only ingredient" in (await call(tb, "change_recipe", action="remove_ingredient",
+                                            ingredient="rice"))["error"]
+
+
+async def test_change_step_rewrites_current_step_and_its_timer(recipe):
+    tb = make_box(recipe)
+    await on_step_2(tb)
+    assert tb.session.timer_offer is None
+    out = await call(tb, "change_recipe", action="change_step", step_number=2,
+                     text="Heat ghee and fry for 5 minutes.")
+    assert out == {"step_number": 2, "instruction": "Heat ghee and fry for 5 minutes.",
+                   "suggested_timer_minutes": 5}
+    assert tb.session.timer_offer == {"minutes": 5, "step_number": 2}
+    assert (await call(tb, "repeat_step"))["instruction"] == "Heat ghee and fry for 5 minutes."
+    assert tb.session.step_index == 1
+
+
+async def test_change_step_defaults_to_current_and_checks_number(recipe):
+    tb = make_box(recipe)
+    await on_step_2(tb)
+    out = await call(tb, "change_recipe", action="change_step", text="Heat ghee only.")
+    assert out["step_number"] == 2
+    assert "only 3 steps" in (await call(tb, "change_recipe", action="change_step", step_number=9,
+                                         text="x"))["error"]
+
+
+async def test_change_recipe_offered_only_with_a_recipe(recipe):
+    tb = make_box(recipe)
+    assert "change_recipe" not in {s.name for s in tb.specs_for(tb.session)}
+    await call(tb, "get_recipe", dish="jeera rice")
+    assert "change_recipe" in {s.name for s in tb.specs_for(tb.session)}
+
+
+@pytest.mark.parametrize("said", ["skip the cumin", "add some peas", "double the garlic", "make it less spicy",
+                                  "can I use brown rice instead", "how do I know the rice is done"])
+def test_changes_and_questions_are_not_instant_commands(recipe, said):
+    s = CookingSession()
+    s.load_recipe(recipe)
+    s.next_step()
+    assert match_command(said, s, None, [], None) is None
+
+
+# ------------------------------------------------------------ the agent
+async def test_question_mid_recipe_does_not_move_step(recipe):
+    llm = ScriptedLLM(recipe=recipe, script={
+        "recipe": [ToolCall("get_recipe", {"dish": "jeera rice"})],
+        "how do i know": ["It's done when the water is gone and the grains are soft."],
+    })
+    agent = CookingAgent(QueueSTT(), llm, ToneTTS(), SimulatedSink(), AgentConfig())
+    await agent.submit_text("find a jeera rice recipe")
+    await agent.submit_text("next")
+    await agent.submit_text("next")
+    await agent.submit_text("how do I know the rice is done?")
+    assert agent.session.step_index == 1
+    assert "[current step] Heat ghee" in agent._system_prompt()
+    assert "change_recipe" in agent._system_prompt()
