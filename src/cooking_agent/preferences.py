@@ -111,7 +111,7 @@ class PreferenceStore:
         return rows
 
     def stated(self) -> list[dict]:
-        rows = self._db.execute("SELECT id, category, value FROM preferences ORDER BY category, added_at")
+        rows = self._db.execute("SELECT id, category, value FROM preferences ORDER BY category, added_at, id")
         return [{"id": i, "category": c, "value": v} for i, c, v in rows]
 
     # -- first-run setup -----------------------------------------------------

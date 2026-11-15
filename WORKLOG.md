@@ -5,6 +5,62 @@ says what was done, why, and how it was checked.
 
 ---
 
+## 2026-11-16 — Task 2: tried the real local model (and fixed two bugs it exposed)
+
+* Installed Ollama 0.40.16 (`winget`) and downloaded `qwen3:8b` (5.2 GB).
+  Note: the Ollama app didn't start its server by itself after install, so
+  the server was started with `ollama serve` for these tests. After a
+  restart of Windows the Ollama app normally starts it.
+* Hardware: RTX 4060 Laptop GPU has the full **8 GB** (Windows reports 4 GB).
+  Ollama's own default context window on this GPU is only 4096 tokens, which
+  confirms the app must send 8192 itself. `ollama ps`: model 100% on GPU,
+  context 8192, 6.2 GB.
+* `cooking-agent diagnose`: all `[ok]`, including `llm: ollama`. First reply
+  68 s (the first-ever load from disk); after that replies start in
+  **0.1–2 s**.
+* **Bug found and fixed:** recipe writing failed every time. The model,
+  held to the exact recipe format, writes `timer_minutes: 0` for steps with
+  no wait, and the format rejected 0. Now 0 means "no timer"
+  (`recipe.py`). Test `test_zero_timer_means_no_timer` (failed first, then
+  passed); the old test that expected 0 to be rejected now checks a negative
+  timer instead.
+* **Flaky test found and fixed:** `test_cli_setup_by_typing` failed about 2
+  runs in 10 on Windows. Saved preferences were sorted by the time they were
+  added, and two saves within one Windows clock tick (~15 ms) got the same
+  time, so their order was random. They're now sorted by insertion order as
+  a tie-breaker (`preferences.py`). Test
+  `test_stated_keeps_insertion_order_when_timestamps_tie` (failed first,
+  then passed); the flaky test then passed 10/10.
+* After the fix, a typed session wrote a real jeera rice recipe for two and
+  read step 1 word for word.
+* **Seen, not fixed here (small-model behaviour):** answered "none" to the
+  allergy question with "No problem, take your time." without saving it;
+  answered "what do I need" and "how long is left" from memory instead of
+  checking; ignored a bare "ready". The instant commands (Task 4) take most
+  of these away from the model. Task 5 (fewer tools) and Task 7 (measured
+  model choice) target the rest.
+* Suite: 235/235.
+
+---
+
+## 2026-11-16 — Task 3: instant commands (matcher)
+
+* New `src/cooking_agent/commands.py`: decides whether what you said is one
+  of the everyday commands ("next", "go back", "say that again", "yes"/"no"
+  to the app's own question, "set a rice timer for twelve minutes", "stop
+  the pasta timer", "how long is left", "what do I need", "make it for six",
+  "cook my dal", "bye") and which action to run. Number words are understood
+  ("twelve", "a minute", "one and a half", "half an hour").
+* Strict on purpose: the whole sentence must match, so "next time make it
+  spicier" still goes to the AI. A bare "stop" never cancels a timer. During
+  first-run setup or dictation only timer commands count.
+* Spoken replies for these commands are fixed sentences ("Okay, rice timer
+  set for 12 minutes."); none ends in a question.
+* Not connected to the assistant yet (that's Task 4).
+* Tests: 50 new in `tests/test_commands.py` (failed first, then passed).
+
+---
+
 ## 2026-11-16 — Task 1: local AI adapter (Ollama)
 
 * New `src/cooking_agent/providers/ollama.py` (`OllamaLLM`): streams replies

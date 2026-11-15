@@ -18,7 +18,7 @@ def test_valid_recipe_round_trips(recipe):
     lambda d: d.update(title=""),
     lambda d: d["ingredients"].append({"name": "   "}),
     lambda d: d["ingredients"].append({"name": "x", "quantity": -1}),
-    lambda d: d["steps"].append({"instruction": "wait", "timer_minutes": 0}),
+    lambda d: d["steps"].append({"instruction": "wait", "timer_minutes": -5}),  # 0 now means "no timer"
     lambda d: d.pop("steps"),
 ])
 def test_invalid_recipes_rejected(recipe, mutate):
@@ -59,3 +59,12 @@ def test_ingredient_describe_scales():
     assert ing.describe() == "1 and 1/2 tbsp ghee, melted"
     assert ing.describe(2) == "3 tbsp ghee, melted"
     assert Ingredient(name="salt").describe(3) == "salt"
+
+
+def test_zero_timer_means_no_timer():
+    # Local models constrained to the JSON schema write 0 for "no timer"
+    # instead of leaving the field out; that must not reject the recipe.
+    from cooking_agent.recipe import Step
+
+    assert Step(instruction="Rinse the rice.", timer_minutes=0).timer_minutes is None
+    assert Step(instruction="Simmer for 10 minutes.", timer_minutes=0).timer_minutes == 10

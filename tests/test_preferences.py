@@ -121,3 +121,16 @@ def test_cli_prefs(tmp_path, monkeypatch, capsys):
     assert "pantry     paneer" in capsys.readouterr().out
     assert main(["prefs", "remove", "paneer"]) == 0
     assert main(["prefs", "remove", "paneer"]) == 1
+
+
+def test_stated_keeps_insertion_order_when_timestamps_tie(tmp_path, monkeypatch):
+    # Windows' clock ticks every ~15 ms, so two saves can share a timestamp.
+    import time
+
+    from cooking_agent.preferences import PreferenceStore
+
+    monkeypatch.setattr(time, "time", lambda: 1000.0)
+    prefs = PreferenceStore(tmp_path / "p.db")
+    for v in ["zucchini", "apple", "mango"]:
+        prefs.remember("dislike", v)
+    assert [r["value"] for r in prefs.stated()] == ["zucchini", "apple", "mango"]

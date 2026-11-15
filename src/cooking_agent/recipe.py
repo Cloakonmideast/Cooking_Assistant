@@ -79,6 +79,12 @@ class Step(BaseModel):
         default=None, gt=0, description="If the step involves waiting, how many minutes."
     )
 
+    @field_validator("timer_minutes", mode="before")
+    @classmethod
+    def _zero_is_no_timer(cls, v):
+        # Models held to the JSON schema often write 0 instead of leaving it out.
+        return None if v in (0, 0.0, "0") else v
+
     @model_validator(mode="after")
     def _timer_from_text(self) -> "Step":
         # Recipes from the web or the cook's own files rarely mark timers, and
