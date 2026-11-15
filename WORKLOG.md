@@ -5,6 +5,21 @@ says what was done, why, and how it was checked.
 
 ---
 
+## 2026-11-16 — Removed the Claude "Co-Authored-By" line from all commits
+
+* Claude Code settings (`~/.claude/settings.json`, applies to every project):
+  `"attribution": {"commit": "", "pr": ""}`, so no attribution line is added
+  to new commits or pull request descriptions.
+* Rewrote the 18 existing commits on `windows-py311-fixes` and `local-model`
+  to drop the line (`git filter-branch --msg-filter`). Only the messages
+  changed: the files in every commit are identical (checked with `git diff`
+  against the old branches). Commit IDs changed, so IDs quoted earlier in
+  chat no longer match; `main` is untouched.
+* Backups of the old branches are kept by git under `refs/original/` until
+  removed.
+
+---
+
 ## 2026-11-16 — Phase 2 planned
 
 New requests, added to the plan file as Tasks 8–14:
