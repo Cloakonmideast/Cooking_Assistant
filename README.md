@@ -20,41 +20,98 @@ Everything runs on one asyncio event loop. The LLM and the TTS run
 concurrently, so the first sentence is already being spoken while the model is
 still writing the rest.
 
-## Quick start
+## Setup
 
-Requires Python 3.11+.
+Requires Python 3.11 or newer (`python --version`; on Windows `py -0` lists
+what is installed). No other system tools are needed.
 
-```bash
-python -m venv .venv
+### 1. Create a virtual environment and install
+
+**Windows (PowerShell)**, in the project folder:
+
+```powershell
+py -3.11 -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+pip install -e .
 ```
 
+If PowerShell refuses to run `Activate.ps1`, allow local scripts once with
+`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, then try again.
+
+**macOS / Linux:**
+
 ```bash
+python3 -m venv .venv
 source .venv/bin/activate
-```
-
-```bash
 pip install -r requirements.txt && pip install -e .
 ```
 
+When the environment is active your prompt starts with `(.venv)`. Activate it
+again in every new terminal before using `cooking-agent`.
+
+### 2. Add your API keys
+
+Copy the template and fill it in (`copy .env.example .env` on Windows,
+`cp .env.example .env` elsewhere):
+
+* `GEMINI_API_KEY` (**required**): the AI that understands you and writes
+  recipes. Free key at <https://aistudio.google.com/apikey>.
+* `DEEPGRAM_API_KEY` (**recommended**): fast, accurate speech in and out.
+  Sign up at <https://console.deepgram.com>; new accounts get free credit.
+
+`.env` is git-ignored; never commit it.
+
+### 3. Speech without Deepgram (optional, offline)
+
+Without a Deepgram key the voice mode uses free offline speech: Vosk to hear
+you and your computer's own voice (pyttsx3) to talk. Slower and less accurate,
+but no account needed.
+
 ```bash
-cp .env.example .env   # then add GEMINI_API_KEY and (recommended) DEEPGRAM_API_KEY
+pip install -e ".[offline]"
 ```
 
-Try it without keys or a microphone first:
+Then download and unzip a Vosk model, e.g.
+[vosk-model-small-en-us-0.15](https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip)
+(about 40 MB), and point `.env` at the unzipped folder:
 
-```bash
-cooking-agent demo
+```
+VOSK_MODEL_PATH=C:\Users\you\.cooking-agent\models\vosk-model-small-en-us-0.15
 ```
 
-Then check your setup and talk to it:
+## Running it
 
-```bash
-cooking-agent diagnose
-```
+Go from simplest to full voice:
 
-```bash
-cooking-agent run
-```
+| Step | Command | Needs | What you should see |
+|---|---|---|---|
+| 1 | `cooking-agent demo` | nothing | A scripted cooking session printed as `[you]` / `[assistant]` lines. Proves the install works. |
+| 2 | `cooking-agent diagnose` | `.env` | `[ok]` / `[FAIL]` for audio devices, mic level (speak when asked), speech in, speech out and the AI. Fix any `FAIL` before step 4. `--mic-seconds 0` skips the mic test. |
+| 3 | `cooking-agent chat` | Gemini key | Type to the real assistant. Try "find me a recipe for jeera rice for two", then "ready". Empty line quits. |
+| 4 | `cooking-agent run` | Gemini key + Deepgram key *or* the offline setup | Talk to it. Say "find me a recipe for fried rice". Ctrl+C quits. |
+
+The first time you use `chat` or `run`, it asks about allergies, health
+conditions and diet before anything else. Answer, or say "none" or "skip".
+
+Use headphones for `run` if you can: the assistant mutes the mic while it is
+speaking, and headphones keep it from hearing itself.
+
+### Troubleshooting
+
+* **`No matching distribution found for numpy...`**: your Python is older than
+  3.11. Install 3.11 or newer and recreate `.venv`.
+* **`cooking-agent` is not recognised**: the virtual environment is not active
+  (step 1), or `pip install -e .` was not run.
+* **`[FAIL] stt: VOSK_MODEL_PATH must point to...`**: no way to hear you yet.
+  Add `DEEPGRAM_API_KEY`, or do the offline setup (step 3).
+* **Replies take many seconds**: check your connection. Time to first word is
+  normally around a second; set `GEMINI_THINKING_LEVEL=low` in `.env` to speed
+  the AI up further.
+* **It answers itself or stops talking at random**: speaker sound is reaching
+  the mic. Use headphones, or start with `cooking-agent run --no-barge-in`.
+
+## All commands
 
 | Command | What it does |
 |---|---|
@@ -82,6 +139,38 @@ With `STT_PROVIDER=auto` / `TTS_PROVIDER=auto` (the default) Deepgram is used
 when `DEEPGRAM_API_KEY` is set and the offline providers otherwise. For the
 offline ones: `pip install -e ".[offline]"`. All settings are listed in
 [`.env.example`](.env.example).
+
+## Services and packages
+
+**Online services** (what is sent where):
+
+| Service | Used for | Sent | Needed? |
+|---|---|---|---|
+| Google Gemini API (`gemini-3.8-flash` by default) | Understanding what you say, choosing actions, writing recipes; also reading recipe photos/PDFs and transcribing audio when there is no Deepgram key | The conversation so far, current cooking state, your saved preferences | Yes |
+| Deepgram (`wss://api.deepgram.com`) | Live speech-to-text (Nova-3) and text-to-speech (Aura-2); transcribing recipe videos | Your microphone audio while listening; the assistant's replies as text | Recommended; offline fallback exists |
+| Recipe websites, YouTube, Instagram, TikTok, ... | Only when you run `recipes add <link>` | A normal page/caption request | Only for importing |
+
+Nothing else leaves your computer. The recipe book and your preferences are a
+local SQLite file (`~/.cooking-agent/recipes.db`).
+
+**Python packages** (pinned in `requirements.txt`):
+
+| Package | What it does here |
+|---|---|
+| `google-genai` | Google's official SDK for Gemini: streaming replies, tool calls, structured recipe output |
+| `websockets` | Talks to Deepgram's streaming speech APIs directly |
+| `pydantic` | Defines and validates the recipe format and every tool's arguments, so a malformed AI reply is caught |
+| `numpy` | Audio maths: loudness (for barge-in), resampling, the test tones |
+| `sounddevice` | Microphone input and speaker output (PortAudio, bundled on Windows/macOS) |
+| `python-dotenv` | Loads `.env` into settings |
+| `yt-dlp` | Reads captions/subtitles from video sites and downloads just the audio when the recipe is only spoken |
+| `vosk` *(offline extra)* | Offline speech-to-text |
+| `pyttsx3` *(offline extra)* | Offline text-to-speech using your OS's voice |
+| `pytest`, `pytest-asyncio` *(dev)* | Test suite |
+
+Built-in Python modules do the rest: `asyncio` (everything runs on one event
+loop), `sqlite3` (recipe book), `urllib` (fetching recipe pages), `argparse`
+(the CLI).
 
 ## What it can do (LLM tools)
 

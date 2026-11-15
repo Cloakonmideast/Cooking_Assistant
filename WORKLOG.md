@@ -5,6 +5,60 @@ says what was done, why, and how it was checked.
 
 ---
 
+## 2026-11-15 — Tested the real app; offline voice set up; README setup guide
+
+Committed on branch `windows-py311-fixes` (README.md and this log only).
+
+### 1. Tested every way of running it
+
+| Check | Result |
+|---|---|
+| `cooking-agent demo` | Works (scripted, offline). |
+| `cooking-agent diagnose --mic-seconds 0` (before) | Gemini key works; audio devices found (27, incl. both Bluetooth headsets). **FAIL** speech-to-text: no `DEEPGRAM_API_KEY` and no Vosk model. Speech output showed "ok" but pyttsx3 was not actually installed (the check only builds the provider object, it doesn't import pyttsx3). |
+| `cooking-agent chat` with the real Gemini, using a throw-away recipe database so the real profile was untouched | Works: asked the first-run allergy question, wrote a new jeera rice recipe for two, read step 1 word for word, asked "ready for the next step?". Time to first word: 20–33 s. |
+| `cooking-agent diagnose --mic-seconds 0` (after step 2 below) | All `[ok]`: audio, stt=vosk, tts=pyttsx3, llm=gemini. |
+| `cooking-agent bench --only next_step set_timer list_timers` (recorded voice clips through Vosk → Gemini → pyttsx3, as if from the mic) | 2 of 3 completed with the right action (100 % tool routing on those). `set_timer` timed out after 90 s. |
+
+**Why `set_timer` failed.** Ran Vosk on that clip alone: it *did* hear it,
+but as "a lifetime or for twelve minutes" (the clip says "set a rice timer for
+twelve minutes"). So the turn was waiting on Gemini, not stuck in speech
+recognition as the benchmark's message guesses. The clips are a robotic
+synthetic voice (espeak-ng), which the small offline Vosk model handles
+poorly; a real voice, and Deepgram, do better.
+
+**Slowness.** Gemini took 6–47 s to start replying in these runs (normally
+about 1 s). pip downloads from PyPI also kept timing out, so this is the
+network connection, not the app.
+
+**Not tested:** `cooking-agent run` with a live microphone. It needs a person
+speaking. Everything it uses was checked above.
+
+### 2. Set up offline voice (free, no account)
+
+* Installed the offline extras into `.venv`: `vosk==0.3.45`, `pyttsx3==2.99`.
+* Downloaded and unzipped the Vosk model `vosk-model-small-en-us-0.15`
+  (~40 MB) to `~/.cooking-agent/models/` (outside the project).
+* Appended `VOSK_MODEL_PATH=...` pointing at it to `.env` (the existing key
+  was not touched; `.env` is not committed).
+
+For better speech, add a `DEEPGRAM_API_KEY` to `.env`; the app then uses
+Deepgram automatically instead of Vosk/pyttsx3.
+
+### 3. README: setup and running guide
+
+* Replaced "Quick start" (bash-only) with **Setup**: Windows PowerShell and
+  macOS/Linux steps, where to get each API key, and the offline Vosk option.
+* Added **Running it**: demo → diagnose → chat → run, with what each needs and
+  what you should see; first-run question; headphones tip.
+* Added **Troubleshooting** for the problems actually hit here (numpy/Python
+  version, `cooking-agent` not found, `VOSK_MODEL_PATH` FAIL, slow replies,
+  echo).
+* Added **Services and packages**: which online services are used, what is
+  sent to each, and what every Python package is for.
+* The old command table is now under **All commands** (unchanged).
+
+---
+
 ## 2026-11-15 — Make the project install and pass its tests on Windows with Python 3.11
 
 Committed on branch `windows-py311-fixes` (not pushed; `main` is untouched).
