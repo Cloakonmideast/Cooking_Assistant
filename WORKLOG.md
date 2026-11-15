@@ -19,6 +19,14 @@ says what was done, why, and how it was checked.
   (`"advisorModel": "fable"` in the user-level `~/.claude/settings.json`,
   applies to every project). No setting changed.
 * No code changed yet.
+* **Plan revised after review by the advisor (Fable).** It found that the
+  model benchmark would mostly measure the new instant commands rather than
+  the model; that commands spoken right after an interruption wouldn't match;
+  that a stale "yes" could skip a step; and that Ollama's default context
+  window could silently cut off our ~3,200-token prompt. Fixes were added to
+  the plan, including a new Task 2: a smoke test against a real Ollama before
+  building on the adapter. The full list is under "Plan history" in the plan
+  file.
 
 ---
 
