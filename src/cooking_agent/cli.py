@@ -54,6 +54,7 @@ async def _run(args: argparse.Namespace) -> int:
     if hasattr(tts, "warmup"):
         with contextlib.suppress(Exception):
             await tts.warmup()
+    await _warm_up_llm(llm)
     print(f"providers: stt={stt.name} llm={llm.name} tts={tts.name}; "
           f"wake word: {s.wake_word or '(none, always listening)'}; barge-in: {s.barge_in}; "
           f"recipe book: {len(store)} recipes")
@@ -65,6 +66,19 @@ async def _run(args: argparse.Namespace) -> int:
         if hasattr(tts, "aclose"):
             await tts.aclose()
     return 0
+
+
+async def _warm_up_llm(llm) -> None:
+    """Load a local model before the first question, so it isn't met with a
+    minute of silence. If it fails, the first turn says the AI is unreachable."""
+    if not hasattr(llm, "warmup"):
+        return
+    print("loading the AI model (the first time after starting Ollama can take a minute)...", flush=True)
+    try:
+        await llm.warmup()
+    except Exception as e:  # Ollama not running, model not downloaded, ...
+        print(f"could not load the AI model: {type(e).__name__}: {e}. Everyday commands still work; "
+              f"check it with cooking-agent diagnose.", flush=True)
 
 
 # ------------------------------------------------------------------ chat
@@ -83,6 +97,7 @@ async def _chat(args: argparse.Namespace) -> int:
     agent = CookingAgent(QueueSTT(), llm, tts, sink, AgentConfig(barge_in=False),
                          MetricsSink(s.metrics_path), on_text=_print_text, recipes=open_recipe_store(s),
                          preferences=prefs)
+    await _warm_up_llm(llm)
     loop = asyncio.get_running_loop()
     timers_task = asyncio.create_task(agent._announcer())  # timer announcements in text mode
     print(f"text mode (llm={llm.name}). Type a message, empty line or Ctrl+D to quit.")

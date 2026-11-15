@@ -270,3 +270,4 @@ Today only allergies and health conditions are checked in code; diets rely on th
   - no model training.
 - **2026-11-16** — User approved the plan. Execution: Native with Opus 5.5 building, Fable advising, and a Fable reviewer for the whole branch at the end.
 - **2026-11-16** — User approved the diet proposal: new Task 6 (diet check in code); measuring becomes Task 7 and adds an automatic diet test (`cooking-agent diet-eval`). User approved running the Ollama install and model downloads.
+- **2026-11-16** — All 7 tasks done. Fable reviewed the whole branch ("with fixes"): 9 important issues plus one upgraded minor (cold-load silence) fixed test-first (`tests/test_review_fixes.py`); minors deferred and listed in WORKLOG.md. Suite 308/308.

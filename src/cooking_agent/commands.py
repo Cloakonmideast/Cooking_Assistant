@@ -9,8 +9,9 @@ model and no internet.
 Matching is deliberately strict: after light normalisation the *whole*
 utterance must match a pattern, so "next time make it spicier" is left to the
 LLM. A bare "yes"/"no" only counts when the agent says the app's own question
-is still open (``awaiting``), and during first-run setup or dictation only
-timer commands are matched, because there "no" and "next" mean something else.
+is still open (``awaiting``). While dictating only timer commands are matched,
+and right after the first-run question "no", "yes", "next" and "that's all"
+are left to the LLM, because there they answer the question.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from typing import Optional
 from .providers.base import ToolCall, ToolResult
 from .recipe import format_minutes, parse_duration_minutes
 from .recipe_store import RecipeStore
-from .state import Awaiting, CookingSession
+from .state import Awaiting, CookingPhase, CookingSession
 
 STEP_RESULT_TOOLS = {"next_step", "previous_step", "repeat_step"}
 NO_REPLY = "No problem, take your time."
@@ -33,6 +34,7 @@ GOODBYE = "Goodbye, happy cooking!"
 class CommandMatch:
     calls: list[ToolCall]
     reply: Optional[str] = None
+    keep_open: bool = False  # "hold on": the app's question is still the open one
 
 
 # ------------------------------------------------------------------ number words
@@ -95,10 +97,12 @@ def _p(pattern: str) -> re.Pattern:
     return re.compile(pattern)
 
 
-_YES = _p(r"(?:(?:yes|yeah|yea|yep|yup|sure|ok|okay|alright|of course|go ahead|do it|start it|please do|"
-          r"sounds good|start the timer)\s*)+")
-_NO = _p(r"(?:(?:no|nope|nah|not yet|wait|hold on|not now|later|no thanks|give me 1 (?:minute|second|moment)|"
-         r"1 moment|in 1 minute)\s*)+")
+_YES = _p(r"(?:(?:yes|yeah|yea|yep|yup|sure|ok|okay|alright|of course|go ahead|do it|please do|"
+          r"sounds good)\s*)+")
+_YES_TIMER = _p(r"(?:(?:yes|yeah|yep|yup|sure|ok|okay|alright|please)\s+)*(?:start it|start the timer)")
+_WAIT = _p(r"(?:(?:not yet|wait|hold on|not now|later|give me 1 (?:minute|second|moment)|1 (?:minute|second|moment)|"
+           r"in 1 minute)\s*)+")
+_DECLINE = _p(r"(?:(?:no|nope|nah|no thanks|no thank you)\s*)+")
 _NEXT = _p(r"next|next step|the next step|next 1|ready|i'm ready|im ready|i am ready|done|i'm done|im done|"
            r"i am done|continue|go on|carry on|move on|what's next|whats next|what next")
 _BACK = _p(r"back|go back|go back 1(?: step)?|go back a step|previous|previous step|the previous step|"
@@ -124,9 +128,11 @@ _SCALE = _p(r"(?:make|scale|cook|do|change|adjust)(?: it| this| the recipe)?(?: 
             r"(?: people| persons| servings| portions| of us)?")
 _COOK = _p(r"(?:let's |lets |let us |i want to |i'd like to |id like to |i wanna )?(?:cook|make) "
            r"(?:my |our |the )?(?P<dish>.+?)(?: recipe)?")
-_END = _p(r"bye|goodbye|good bye|bye bye|bye now|that's all|thats all|that is all|that's all bye|"
-          r"thats all bye|that's all thanks|thanks bye|thank you bye|i'm finished|stop the assistant|quit|exit|"
-          r"see you|see ya")
+_END = _p(r"bye|goodbye|good bye|bye bye|bye now|that's all bye|thats all bye|thanks bye|thank you bye|"
+          r"stop the assistant|quit|exit")
+# "that's all" only ends the session when nothing is going on; mid-recipe it
+# usually means "that's all for this step" or answers a question.
+_THATS_ALL = _p(r"that's all|thats all|that is all")
 _GENERIC_TIMER_NAMES = {"new", "kitchen", "another", "cooking", "a", "an"}
 
 
@@ -134,16 +140,25 @@ def _call(tool: str, **args) -> CommandMatch:
     return CommandMatch([ToolCall(tool, args)])
 
 
+def _minutes(dur: str) -> Optional[float]:
+    """'5 minutes and 30 seconds' -> 5.5 (each part parsed, then added)."""
+    parts = [parse_duration_minutes(p) for p in dur.split(" and ")]
+    return sum(parts) if parts and all(parts) else None
+
+
 def _timer_command(t: str, active_timers: list[str]) -> Optional[CommandMatch]:
     for pat in _SET_TIMER:
         mt = pat.fullmatch(t)
         if mt:
-            minutes = parse_duration_minutes(mt.group("dur"))
+            minutes = _minutes(mt.group("dur"))
             if not minutes:
                 return None
             name = mt.groupdict().get("name") or "kitchen"
             if name in _GENERIC_TIMER_NAMES:
-                name = "kitchen"
+                # an unnamed timer never silently replaces another one
+                name, n = "kitchen", 2
+                while name in active_timers:
+                    name, n = f"kitchen {n}", n + 1
             return _call("set_timer", name=name, minutes=minutes)
     mt = _CANCEL_TIMER.fullmatch(t)
     if mt:
@@ -171,10 +186,16 @@ def match_command(text: str, session: CookingSession, store: Optional[RecipeStor
     # yes/no/next/that's all are answers to it, not commands.
     answers_held = setup_open
     if awaiting is not None and not answers_held:
-        if _YES.fullmatch(t):
-            return _call("start_step_timer" if awaiting is Awaiting.TIMER else "next_step")
-        if _NO.fullmatch(t):
-            return CommandMatch([], reply=NO_REPLY)
+        if awaiting is Awaiting.TIMER and (_YES.fullmatch(t) or _YES_TIMER.fullmatch(t)):
+            return _call("start_step_timer")
+        if awaiting is Awaiting.NEXT_STEP and _YES.fullmatch(t):
+            return _call("next_step")
+        if _WAIT.fullmatch(t):
+            return CommandMatch([], reply=NO_REPLY, keep_open=True)
+        if _DECLINE.fullmatch(t):
+            # "no" to a timer offer declines it (the app moves on to "ready?");
+            # "no" to "ready for the next step?" means not yet.
+            return CommandMatch([], reply=NO_REPLY, keep_open=awaiting is Awaiting.NEXT_STEP)
     if session.recipe is not None:
         if _NEXT.fullmatch(t):
             return None if answers_held else _call("next_step")
@@ -188,11 +209,14 @@ def match_command(text: str, session: CookingSession, store: Optional[RecipeStor
         if mt:
             return _call("scale_servings", servings=int(mt.group("n")))
     mt = _COOK.fullmatch(t)
-    if mt and store is not None:
+    if mt and store is not None and session.phase is not CookingPhase.COOKING:  # never swap mid-cook
         dish = mt.group("dish").strip()
         if dish and not dish.startswith(("it ", "a ", "an ", "some ")) and store.find(dish) is not None:
             return _call("get_recipe", dish=dish)
     if _END.fullmatch(t) and not answers_held:
+        return _call("end_session")
+    idle = session.recipe is None and not active_timers and not session.setup_pending
+    if _THATS_ALL.fullmatch(t) and idle and not answers_held:
         return _call("end_session")
     return None
 

@@ -5,6 +5,65 @@ says what was done, why, and how it was checked.
 
 ---
 
+## 2026-11-16 — Fable code review of the whole branch, and fixes
+
+A separate Fable reviewer read all 14 commits (26 files) against the plan,
+ran the tests and probed with real phrases. Verdict: **ready "with fixes"**.
+No critical issues; the offline fallback, number words, longer sentences and
+commands after an interruption were all confirmed working. It found nine
+important issues, and I upgraded one of its minor ones (the silent first
+minute). All ten are fixed, each with a test that reproduced the problem
+first (`tests/test_review_fixes.py`, 36 tests):
+
+1. **"non-veg" / "non-vegetarian" / "not vegetarian" was read as
+   vegetarian** (and "with lots of veg" too), forcing veg recipes and false
+   warnings on meat-eaters. Now negated words and "veg" meaning vegetables
+   don't count as a diet (`preferences.diets_in`).
+2. **Restating a rule switched the diet check off** ("Jain dal, no onion no
+   garlic" let potato and honey through). Ruled-out words ("no onion",
+   "garlic-free") no longer count as asking for them.
+3. **Naming one forbidden item switched off the whole diet** (vegan "palak
+   paneer" let cream and eggs through). Now only the named item is allowed;
+   the rest of the diet is still checked (`dietary.requested_words`).
+4. **"Hold on" to a timer offer lost the timer, and the next "yes" skipped a
+   step.** "Hold on" / "not yet" / "wait" now keep the question open;
+   "start it" only ever answers a timer offer.
+5. **"I'm finished" or "that's all" quit the app mid-cooking** (and cancelled
+   timers). "I'm finished" no longer quits; "that's all" only quits when no
+   recipe, timer or setup is in progress. "Bye" still quits.
+6. **A "yes" could answer a question that was cut off, overtaken by a timer
+   announcement, or asked long ago.** A question now only counts once it was
+   heard in full, a timer announcement clears it, and it expires after
+   60 seconds.
+7. **A second unnamed timer replaced the first** ("kitchen" twice). It's now
+   "kitchen 2", "kitchen 3"...
+8. **"Five minutes and thirty seconds" set 5 minutes.** Both parts are now
+   added.
+9. **"Cook the rice" mid-recipe replaced the recipe in progress** without
+   asking. While cooking, that now goes to the AI instead.
+10. **First reply after starting could be ~1 minute of silence** (model
+    loading; measured 68 s). `run` and `chat` now load the model first and
+    say so; the Ollama client has a 120 s timeout, so a hung server gives
+    "I can't reach the AI model" instead of silence forever.
+
+Checked against the real local model afterwards: model loaded at start, "hold
+on" then "yes" worked, step navigation and timers were instant. Suite
+308/308; demo runs to the end.
+
+**Not fixed (minor, listed for later):** a few diet words missing or
+over-matched (e.g. catfish, steak, dashi, mawa, shrikhand, mushrooms and
+Hindi names like aloo/pyaz for Jain; "oyster mushrooms", "goat cheese",
+"butter beans", "ginger powder" wrongly flagged); "vegetarian but I eat eggs"
+is treated as plain vegetarian; the diet test can only see what the app's own
+word lists see; "well done" moves to the next step; very long timers give a
+technical error message; small wording gaps offline.
+
+**Seen while checking, not from the review:** qwen3 still answers "none" to
+the first-run allergy question with "No problem, take your time." without
+marking setup done, so the question comes back next launch.
+
+---
+
 ## 2026-11-16 — Task 7: measured three local models; `qwen3:8b` stays the default
 
 * New measuring tools:

@@ -52,16 +52,23 @@ class OllamaLLM:
     name = "ollama"
 
     def __init__(self, model: str, url: str = DEFAULT_URL, client: Any = None,
-                 temperature: float = 0.4, num_ctx: int = 8192):
+                 temperature: float = 0.4, num_ctx: int = 8192, timeout: float = 120.0):
         if client is None:
-            from ollama import AsyncClient  # lazy import keeps tests and other providers independent
+            import ollama  # lazy import keeps tests and other providers independent
 
-            client = AsyncClient(host=url)
+            # Without a timeout a hung server would mean silence forever instead
+            # of "I can't reach the AI model right now".
+            client = ollama.AsyncClient(host=url, timeout=timeout)
         self.client = client
         self.model = model
         self.url = url
         self.temperature = temperature
         self.num_ctx = num_ctx
+
+    async def warmup(self) -> None:
+        """Load the model into memory now, so the first reply doesn't wait for
+        it (the first load can take about a minute)."""
+        await self.client.generate(model=self.model, prompt="", keep_alive=KEEP_ALIVE)
 
     # ------------------------------------------------------------ conversion
     @staticmethod

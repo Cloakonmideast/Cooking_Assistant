@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from .providers.base import LLMProvider, ToolCall, ToolResult, ToolSpec
 from .recipe import Ingredient, Recipe, Step, format_minutes, parse_ingredient_line
-from .dietary import DIETS, find_conflicts
+from .dietary import DIETS, find_conflicts, requested_words
 from .preferences import CATEGORIES, PreferenceStore, describe_for_recipe, diets_in
 from .recipe_store import RecipeStore
 from .state import Awaiting, CookingPhase, CookingSession, InvalidTransition, RecipeDraft
@@ -363,20 +363,22 @@ class ToolBox:
         conflicts = self._conflicts([i.name for i in recipe.ingredients], request)
         return recipe, [self._warning_text(c) for c in conflicts]
 
-    def _diets(self, profile: dict, request: str) -> list[str]:
-        """Diets to check: stated ones plus any named in the request ("vegan,
-        for four"), minus any the request itself overrides ("chicken biryani,
-        just this once"): for diet, what the cook asks for in the moment wins."""
+    def _diets(self, profile: dict, request: str) -> tuple[list[str], set[str]]:
+        """Diets to check (stated ones plus any named in the request, e.g.
+        "vegan, for four") and the forbidden ingredients the cook asked for by
+        name ("chicken biryani, just this once"): for a diet, the request wins
+        for those ingredients only."""
         wanted = diets_in(" ".join(profile.get("diet", []))) | diets_in(request)
-        return sorted(d for d in wanted if d in DIETS and not find_conflicts([request], diets=[d]))
+        diets = sorted(d for d in wanted if d in DIETS)
+        return diets, requested_words(request, diets)
 
     def _conflicts(self, names: list[str], request: str = ""):
         p = self._profile()
-        diets = self._diets(p, request)
+        diets, allowed = self._diets(p, request)
         if not (p.get("allergy") or p.get("condition") or diets):
             return []
         return find_conflicts(names, allergies=p.get("allergy", []), conditions=p.get("condition", []),
-                              diets=diets)
+                              diets=diets, diet_allowed=allowed)
 
     @staticmethod
     def _warning_text(c) -> str:

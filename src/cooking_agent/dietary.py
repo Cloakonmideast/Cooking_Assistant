@@ -111,6 +111,29 @@ DIETS: dict[str, tuple[list[tuple[list[str], list[str]]], str]] = {
 }
 
 
+_NEGATION_BEFORE = re.compile(r"(?<![a-z])(?:no|without|not|zero|skip|minus|less|hold the|avoid)\s+(?:any\s+|the\s+)?$")
+_FREE_AFTER = re.compile(r"^(?:e?s)?[\s-]?free(?![a-z])")
+
+
+def requested_words(request: str, diets: Iterable[str]) -> set[str]:
+    """Words a diet forbids that the cook asked for by name ("palak paneer",
+    "chicken biryani"), not counting ones they ruled out ("no onion",
+    "garlic-free"). For a diet, what the cook asks for in the moment wins,
+    but only for the named ingredient: the rest of the diet still applies."""
+    text = f" {request.lower()} "
+    out: set[str] = set()
+    for d in diets:
+        diet = DIETS.get(d.lower().strip())
+        for words, _ in (diet[0] if diet else []):
+            for w in words:
+                for m in re.finditer(rf"(?<![a-z]){re.escape(w)}(?:e?s)?(?![a-z])", text):
+                    if _NEGATION_BEFORE.search(text[: m.start()]) or _FREE_AFTER.search(text[m.end():]):
+                        continue
+                    out.add(w)
+                    break
+    return out
+
+
 def diet_hint(diet: str) -> str:
     rule = DIETS.get(diet.lower().strip())
     return f"{diet} ({rule[1]})" if rule else diet
@@ -176,7 +199,13 @@ class Conflict:
 
 
 def find_conflicts(ingredient_names: Iterable[str], allergies: Iterable[str] = (),
-                   conditions: Iterable[str] = (), diets: Iterable[str] = ()) -> list[Conflict]:
+                   conditions: Iterable[str] = (), diets: Iterable[str] = (),
+                   diet_allowed: Iterable[str] = ()) -> list[Conflict]:
+    """``diet_allowed``: words the cook asked for by name (see
+    ``requested_words``); they don't count against a diet, and neither does a
+    longer word containing them ("chicken stock" for a chicken biryani).
+    Allergies and conditions are never allowed this way."""
+    allowed = [a.lower() for a in diet_allowed]
     rules: list[tuple[str, list[str], list[str]]] = []
     for a in allergies:
         rules.append((f"{a} allergy", allergen_words(a), allergen_exemptions(a)))
@@ -187,6 +216,7 @@ def find_conflicts(ingredient_names: Iterable[str], allergies: Iterable[str] = (
     for d in diets:
         diet = DIETS.get(d.lower().strip())
         for words, exempt in (diet[0] if diet else []):
+            words = [w for w in words if not any(_has_word(f" {w} ", a) for a in allowed)]
             rules.append((f"{d} diet", words, exempt))
     out: list[Conflict] = []
     for name in ingredient_names:

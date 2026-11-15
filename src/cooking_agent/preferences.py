@@ -60,9 +60,25 @@ def ingredient_key(name: str) -> str:
     return " ".join(words)
 
 
+# "non-veg", "not vegetarian", "no veg" name the opposite of the diet.
+_NEGATED = re.compile(r"(?<![a-z])(?:non|not|no)[\s-]+$")
+# "with lots of veg", "less veg more meat": vegetables, not a diet.
+_VEG_AS_VEGETABLES = re.compile(r"(?<![a-z])(?:of|more|less|some|any|the|with|extra|fresh|mixed|seasonal)\s+$")
+
+
 def diets_in(text: Optional[str]) -> set[str]:
     t = f" {_norm(text or '')} "
-    return {d for word, d in DIET_WORDS.items() if re.search(rf"(?<![a-z]){re.escape(word)}(?![a-z])", t)}
+    found: set[str] = set()
+    for word, diet in DIET_WORDS.items():
+        for m in re.finditer(rf"(?<![a-z]){re.escape(word)}(?![a-z-])", t):
+            before = t[: m.start()]
+            if _NEGATED.search(before):
+                continue
+            if word in ("veg", "veggie") and _VEG_AS_VEGETABLES.search(before):
+                continue
+            found.add(diet)
+            break
+    return found
 
 
 class PreferenceStore:

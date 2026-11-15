@@ -145,6 +145,7 @@ LLM_UNAVAILABLE = ("I can't reach the AI model right now. I can still go to the 
                    "set timers, and cook recipes from your recipe book.")
 SETUP_LATER = "You can finish setup later by typing cooking-agent setup."
 MAX_TOOL_ROUNDS = 4
+QUESTION_FRESH_S = 60.0  # a bare "yes" answers the app's question only this soon after it was heard
 MAX_HISTORY_MESSAGES = 40
 
 
@@ -199,6 +200,7 @@ class CookingAgent:
         # True only while the app's own question was the last thing asked, so a
         # bare "yes"/"no" can be answered instantly; any other turn clears it.
         self._question_fresh = False
+        self._question_pending = False  # asked this turn; becomes fresh once the whole reply was heard
         self._setup_fresh = False  # same, for the first-run allergies/diet question
         self._stopped = asyncio.Event()
 
@@ -348,12 +350,14 @@ class CookingAgent:
             out = self._output
             if out and out.accepting and out.task and not out.task.done():
                 out.queue.put_nowait(text)
+                self._question_pending = False  # the question is no longer the last thing heard
                 continue
             new = _Output()
             new.task = asyncio.create_task(self._speak_only(text, new), name="announcement")
             self._output = new
 
     async def _speak_only(self, text: str, out: _Output) -> None:
+        self._question_fresh = False  # an announcement now comes after the app's question
         self.on_text("assistant", text)
         out.queue.put_nowait(text)
         out.queue.put_nowait(_END)
@@ -373,6 +377,8 @@ class CookingAgent:
         try:
             await self._play(out)
             await producer  # surface LLM/tool errors
+            # The reply, including any question at its end, was heard in full.
+            self._question_fresh = self._question_pending
         except asyncio.CancelledError:
             producer.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -425,8 +431,9 @@ class CookingAgent:
             q.put_nowait(seg)
 
         # A question the app asked counts as "just asked" for this turn only.
-        question_fresh, setup_fresh = self._question_fresh, self._setup_fresh
-        self._question_fresh = self._setup_fresh = False
+        heard_recently = time.perf_counter() - self._last_spoke_at <= QUESTION_FRESH_S
+        question_fresh, setup_fresh = self._question_fresh and heard_recently, self._setup_fresh
+        self._question_fresh = self._setup_fresh = self._question_pending = False
         match = None
         if self.config.instant_commands:
             match = match_command(raw, self.session, self.tools.store, self.timers.active_names,
@@ -466,9 +473,10 @@ class CookingAgent:
             emit(text)
             self.on_text("assistant", text)
         committed.append(Message("assistant", text))
-        self._ask_follow_up(results, committed, spoken, emit)
-        if not match.calls and self.session.awaiting is not None:
-            self._question_fresh = True  # "not yet": the app's question is still the open one
+        if match.keep_open:
+            self._question_pending = True  # "hold on": the same question is still open
+        else:
+            self._ask_follow_up(results, committed, spoken, emit)
 
     async def _llm_rounds(self, committed: list[Message], spoken: list[str], emit: Callable[[str], None],
                           m: TurnMetrics) -> None:
@@ -546,7 +554,7 @@ class CookingAgent:
             return  # the model already ended on a question; don't stack a second one
         emit(question)
         self.on_text("assistant", question)
-        self._question_fresh = True  # a bare "yes"/"no" next turn answers this
+        self._question_pending = True  # once heard in full, a bare "yes"/"no" answers this
         last = committed[-1]  # the final reply of the turn, text only
         committed[-1] = Message("assistant", f"{last.text} {question}".strip())
 
