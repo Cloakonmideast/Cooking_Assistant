@@ -21,6 +21,13 @@
 | 5. Phase-specific tool lists | done |
 | 6. Diet check in code (vegetarian, vegan, Jain) | done |
 | 7. Choose the model by measuring (routing, speed, diet test) | done |
+| 8. Eggetarian diet | not started |
+| 9. Questions and changes mid-recipe | not started |
+| 10. Learn and use everything the cook prefers | not started |
+| 11. Keep the model loaded (15-min and pre-timer pings) | not started |
+| 12. Understanding test (questions, changes, commands) | not started |
+| 13. Test Gemma 4 and select the best model | not started |
+| 14. Fable review of Phase 2 | not started |
 
 **Execution approach:** Native: Opus 5.5 builds every task in the main session, Fable (the configured `advisorModel`) advises at decision points, and a fresh Fable reviewer subagent reviews the whole branch at the end. Its findings are fixed and logged before handing back to the user.
 **Branch:** `local-model` (from `windows-py311-fixes`).
@@ -250,6 +257,80 @@ Today only allergies and health conditions are checked in code; diets rely on th
 
 ---
 
+# Phase 2 (requested 2026-11-16, after the Phase 1 review)
+
+**Goal:** an eggetarian diet; everything the cook prefers is saved and used; changes and questions about the dish mid-recipe are understood; the model stays loaded; Gemma 4 is tested and the best model selected.
+
+**Requests, in the user's words → tasks:**
+- "make an egg-eating vegetarian an eggetarian: everything in a veg diet plus eggs, no meat" → Task 8
+- "make sure habits are learned and what they prefer is stored, could be a substitution or anything, saved and accounted for" → Task 10
+- "if they ask a question about the dish during the recipe and ask to make changes in between, all accounted for; judges what the user says correctly" → Tasks 9 and 12
+- "let the model ping every 15 mins and when the timer is about to end so it doesn't unload" → Task 11
+- "test gemma as well and then select the best model" → Task 13
+
+**Planner's calls (correct any):**
+- Learned habits count once a pattern repeats (2+ times), so a one-off "no ghee today" doesn't change future recipes; every event is still saved. Stated preferences are saved immediately.
+- A learned diet ("you usually cook vegetarian") shapes new recipes and gives a spoken heads-up if a recipe breaks it, but never forces a rewrite: only stated diets do that.
+- Gemma candidate: `gemma4:e4b` (fits 8 GB). `llama3.1:8b` keeps its Phase 1 numbers and is only re-downloaded if Gemma and qwen3 tie.
+
+## Phase 2 Review Focus
+
+1. "Vegetarian but I eat eggs", "eggitarian", "I eat eggs but no meat" all become eggetarian; "eggless" stays eggless. *(Task 8)*
+2. A question mid-recipe ("how do I know the rice is done?", "can I use brown rice?") is answered from the actual recipe, without moving the step or changing the recipe. *(Tasks 9, 12)*
+3. A change mid-recipe ("skip the cashews", "add peas", "make it less spicy", "double the garlic") changes the loaded recipe, keeps the current step, and is diet-checked. *(Task 9)*
+4. A one-off change doesn't become a habit; the same change twice does, and the next generated recipe reflects it. *(Task 10)*
+5. The model is pinged at least every 15 minutes and about a minute before any timer ends, even while nobody speaks. *(Task 11)*
+
+### Task 8: Eggetarian diet
+
+**Files:** `src/cooking_agent/dietary.py` (`DIETS["eggetarian"]`), `src/cooking_agent/preferences.py` (`DIET_WORDS`, `diets_in`); test `tests/test_dietary_safety.py`.
+**Interfaces:** `DIETS["eggetarian"] = ([(_MEAT + _SEAFOOD, _VEG_OK)], "vegetarian but eggs are fine: no meat, poultry, fish, seafood, gelatin, or meat or fish stock")`. `diets_in` maps "eggetarian", "eggitarian", "ovo vegetarian", "ovo-vegetarian", and "vegetarian" said together with "eat eggs" / "eats eggs" / "eggs are fine" / "eggs are ok" to `eggetarian` (and then *not* also `vegetarian`).
+- [ ] Tests: `test_eggetarian_allows_eggs_not_meat` (`["2 eggs", "mayonnaise"]` → none; `["chicken", "fish sauce"]` → 2), `test_egg_eating_vegetarian_phrases` (the phrases above → `{"eggetarian"}`), `test_eggless_unchanged`; `describe_for_recipe({"diet": ["vegetarian but I eat eggs"]})` contains "eggs are fine". RED, implement, GREEN, `pytest -q`, WORKLOG, commit.
+
+### Task 9: Questions and changes mid-recipe
+
+**Files:** `src/cooking_agent/state.py` (`CookingSession.snapshot`, new edit methods), `src/cooking_agent/tools.py` (new `change_recipe` tool, added to `RECIPE_TOOLS`), `src/cooking_agent/agent.py` (system prompt lines); tests `tests/test_tools.py`, `tests/test_agent.py`.
+**Interfaces:**
+- `snapshot()` adds `"recipe_text"` when a recipe is loaded: title, servings, ingredient lines (scaled), numbered steps (current one marked). Lets the model answer questions about the dish from the real recipe.
+- Tool `change_recipe(action: "add_ingredient" | "remove_ingredient" | "change_amount" | "change_step", ingredient: str | None, amount: str | None, step_number: int | None, text: str | None, reason: str | None)`. Ingredient lines parsed with `parse_ingredient_line`; step position never moves; added/changed ingredients are diet/allergy checked like substitutions (`warnings`); returns the changed line(s).
+- System prompt: "During a recipe, answer questions about the dish from recipe_text without moving the step. Use change_recipe for changes the cook asks for (skip, add, more/less of something, change a step) and substitute_ingredient for swaps. Never call next_step unless the cook says they're ready."
+- [ ] Tests: `test_snapshot_includes_recipe_text_and_current_step`, `test_change_recipe_remove_add_amount_keeps_step` (step index unchanged after each), `test_change_recipe_added_allergen_warned`, `test_change_recipe_unknown_ingredient_lists_ingredients`, `test_question_mid_recipe_does_not_move_step` (agent + scripted LLM answering text only). RED, implement, GREEN, suite, WORKLOG, commit.
+
+### Task 10: Learn and use everything the cook prefers
+
+**Files:** `src/cooking_agent/preferences.py` (new table `adjustments(kind, original, replacement, ts)`, `record_adjustment`, `learned()` additions, `describe_for_recipe` lines), `src/cooking_agent/tools.py` (record on `substitute_ingredient` and `change_recipe`; soft learned-diet warning); tests `tests/test_preferences.py`, `tests/test_dietary_safety.py`.
+**Interfaces:**
+- `PreferenceStore.record_adjustment(kind: "swap" | "remove" | "add" | "more" | "less", original: str, replacement: str | None = None) -> None` (saved every time).
+- `learned()` adds `"usually_swaps": [{"from": "ghee", "to": "butter"}]`, `"usually_leaves_out": [...]`, `"usually_adds": [...]`, `"usually_more": [...]`, `"usually_less": [...]` once the same adjustment happened 2+ times (`ADJUST_MIN_TIMES = 2`).
+- `describe_for_recipe` adds: "Usually swaps ghee for butter; usually leaves out cashews; likes more garlic; likes less chilli. Apply these unless the request says otherwise." `prefs` CLI shows them; `prefs forget-history` clears them.
+- Learned diet: `_conflicts` gains learned diets as a **soft** set: a conflict adds a warning "this has chicken, and you usually cook vegetarian", no rewrite.
+- [ ] Tests: `test_one_swap_is_not_a_habit`, `test_two_swaps_become_a_habit_and_reach_the_recipe_writer`, `test_removed_twice_is_left_out`, `test_more_less_learned`, `test_forget_history_clears_adjustments`, `test_learned_diet_warns_without_rewrite`. RED, implement, GREEN, suite, WORKLOG, commit.
+
+### Task 11: Keep the model loaded
+
+**Files:** `src/cooking_agent/agent.py` (keep-warm task started in `run` and in `chat`), `src/cooking_agent/timers.py` (read-only use of deadlines); test `tests/test_agent.py`.
+**Interfaces:** `AgentConfig.keep_warm_every_s: float = 900` (15 min), `keep_warm_before_timer_s: float = 60`. A background task calls `llm.warmup()` (when the LLM has it) every 15 minutes, and once per timer about a minute before it ends; failures are logged, never spoken. Timer pings use `TimerManager.list()` remaining seconds.
+- [ ] Tests (fake clock/LLM with a `warmup` counter): `test_keep_warm_pings_every_interval`, `test_keep_warm_pings_once_before_each_timer_ends`, `test_keep_warm_failure_is_silent`, `test_no_warmup_method_no_task`. RED, implement, GREEN, suite, WORKLOG, commit.
+
+### Task 12: Understanding test (questions, changes, commands mid-recipe)
+
+**Files:** create `src/cooking_agent/understanding_eval.py`, CLI `cooking-agent understanding-eval [--out FILE]`; test `tests/test_bench.py`.
+**Interfaces:** `UNDERSTANDING_CASES`: ~20 typed utterances with a recipe loaded on step 2, each with the expected outcome: a tool (`change_recipe`, `substitute_ingredient`, `next_step`, `set_timer`, `list_ingredients`...) or `"answer"` (a reply, no tool, step unchanged). Mix: questions about the dish ("how do I know the rice is done", "can I use brown rice instead", "why do we soak it"), changes ("skip the cumin", "add some peas", "make it less salty", "use butter instead of ghee"), commands phrased loosely ("ok I'm done with that", "wait what was the last step"), and chit-chat. Runs with instant commands **on** (the real behaviour) and reports accuracy per kind. `async run_understanding_eval(llm) -> dict`.
+- [ ] Tests (fake LLM): `test_understanding_eval_scores_answer_vs_tool`, `test_understanding_eval_step_must_not_move_on_questions`. RED, implement, GREEN, suite, WORKLOG, commit.
+
+### Task 13: Test Gemma 4 and select the best model
+
+- [ ] `ollama pull gemma4:e4b`; smoke check (`diagnose`, one tool call, one recipe) as in Task 2.
+- [ ] For `qwen3:8b` and `gemma4:e4b`: `bench --text-stt --no-instant --runs 3`, `diet-eval`, `understanding-eval`.
+- [ ] Pick: highest understanding + routing accuracy, diet 10/10, first word under ~1.5 s; ties → faster. If Gemma and qwen3 tie, re-pull `llama3.1:8b` and include it.
+- [ ] Set default, `ollama rm` the losers, results table in README and WORKLOG, commit.
+
+### Task 14: Fable review of Phase 2
+
+- [ ] Fable reviewer over the Phase 2 commits with the Phase 2 Review Focus; fix Critical/Important test-first; defer minors to WORKLOG; report rulings.
+
+---
+
 ## Plan history
 
 - **2026-11-15** — First version, written from the agreed "simple and local" scope.
@@ -271,3 +352,4 @@ Today only allergies and health conditions are checked in code; diets rely on th
 - **2026-11-16** — User approved the plan. Execution: Native with Opus 5.5 building, Fable advising, and a Fable reviewer for the whole branch at the end.
 - **2026-11-16** — User approved the diet proposal: new Task 6 (diet check in code); measuring becomes Task 7 and adds an automatic diet test (`cooking-agent diet-eval`). User approved running the Ollama install and model downloads.
 - **2026-11-16** — All 7 tasks done. Fable reviewed the whole branch ("with fixes"): 9 important issues plus one upgraded minor (cold-load silence) fixed test-first (`tests/test_review_fixes.py`); minors deferred and listed in WORKLOG.md. Suite 308/308.
+- **2026-11-16** — Phase 2 added from the user's requests: eggetarian diet, learning every preference, mid-recipe questions and changes, keep-warm pings, Gemma 4 test, understanding test, Fable review.

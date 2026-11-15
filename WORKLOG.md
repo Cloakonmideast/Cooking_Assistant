@@ -5,6 +5,27 @@ says what was done, why, and how it was checked.
 
 ---
 
+## 2026-11-16 — Phase 2 planned
+
+New requests, added to the plan file as Tasks 8–14:
+* an **eggetarian** diet (vegetarian plus eggs, no meat);
+* **learn and use everything the cook prefers**: swaps, things left out or
+  added, more/less of something, as well as diets, saved and applied to new
+  recipes;
+* **questions and changes mid-recipe** understood ("can I use brown rice?",
+  "skip the cashews", "make it less spicy"), with the recipe changed in place
+  and the current step kept;
+* **keep the model loaded**: a ping every 15 minutes and about a minute
+  before any timer ends;
+* **test Gemma 4** (`gemma4:e4b`) and select the best model, now also using a
+  new understanding test;
+* a **Fable review** of Phase 2.
+
+My calls in the plan: a habit counts after it happens twice (every event is
+still saved); a learned diet gives a heads-up but never forces a rewrite.
+
+---
+
 ## 2026-11-16 — Fable code review of the whole branch, and fixes
 
 A separate Fable reviewer read all 14 commits (26 files) against the plan,
