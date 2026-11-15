@@ -21,7 +21,8 @@ from pydantic import BaseModel, Field, ValidationError
 from .providers.base import LLMProvider, ToolCall, ToolResult, ToolSpec
 from .recipe import Ingredient, Recipe, Step, format_minutes, parse_ingredient_line
 from .dietary import DIETS, find_conflicts, requested_words
-from .preferences import CATEGORIES, PreferenceStore, describe_for_recipe, diets_in, prefer_eggetarian
+from .preferences import (CATEGORIES, PreferenceStore, describe_for_recipe, diets_in, prefer_eggetarian,
+                          usual_changes)
 from .recipe_store import RecipeStore
 from .state import Awaiting, CookingPhase, CookingSession, InvalidTransition, RecipeDraft
 from .timers import TimerError, TimerManager
@@ -344,8 +345,11 @@ class ToolBox:
             if servings and servings != saved.recipe.servings:
                 self.session.scale_servings(servings)
             out = self._recipe_summary(saved.recipe) | {"source": "your recipe book"}
-            if warnings := self._warnings(saved.recipe, request):
+            warnings = self._warnings(saved.recipe, request) + self._learned_diet_warnings(saved.recipe, request)
+            if warnings:
                 out["warnings"] = warnings  # their own recipe: warn, never change it silently
+            if usual := self._usual_changes_for_saved():
+                out["your_usual_changes"] = usual  # offered, made only if the cook says so
         else:
             profile = self._profile()
             prompt = RECIPE_PROMPT.format(
@@ -355,6 +359,7 @@ class ToolBox:
                 profile=describe_for_recipe(profile),
             )
             recipe, warnings = await self._write_recipe(prompt, request)
+            warnings += self._learned_diet_warnings(recipe, request)
             self._loaded(recipe, "generated", request_id, request)
             if servings and servings != recipe.servings:  # the model ignored the requested servings
                 self.session.scale_servings(servings)
@@ -404,6 +409,34 @@ class ToolBox:
     def _warning_text(c) -> str:
         return f"contains {c.message()}"
 
+    def _learned_diet_warnings(self, recipe: Recipe, request: str) -> list[str]:
+        """A diet the cook usually asks for but never stated: a heads-up only,
+        never a rewrite. Skipped when a stated or requested diet applies, and
+        for ingredients the request names ("chicken biryani")."""
+        p = self._profile()
+        learned = [d for d in p.get("learned_from_history", {}).get("usually_asks_for", []) if d in DIETS]
+        hard, _ = self._diets(p, request)
+        if not learned or hard:
+            return []
+        soft = sorted(prefer_eggetarian(set(learned)))
+        allowed = requested_words(request, soft)
+        return [f"has {c.ingredient}, and you usually cook {c.reason.removesuffix(' diet')}"
+                for c in find_conflicts([i.name for i in recipe.ingredients], diets=soft, diet_allowed=allowed)]
+
+    def _usual_changes_for_saved(self) -> list[str]:
+        """The cook's usual changes that apply to the loaded recipe-book recipe."""
+        usual = usual_changes(self._profile())
+        s = self.session
+        has = lambda name: s.find_ingredient_words(name) is not None  # noqa: E731
+        return ([f"swap {x['from']} for {x['to']}" for x in usual["swaps"] if has(x["from"])]
+                + [f"leave out {x}" for x in usual["leaves_out"] if has(x)]
+                + [f"use more {x}" for x in usual["more"] if has(x)]
+                + [f"use less {x}" for x in usual["less"] if has(x)])
+
+    def _record(self, kind: str, original: str, replacement: Optional[str] = None) -> None:
+        if self.prefs is not None:
+            self.prefs.record_adjustment(kind, original, replacement, load_id=self._request_id)
+
     def _warnings(self, recipe: Recipe, request: str = "") -> list[str]:
         return [self._warning_text(c) for c in self._conflicts([i.name for i in recipe.ingredients], request)]
 
@@ -433,6 +466,11 @@ class ToolBox:
         out += [f"no {d}" for d in profile.get("dislike", [])]
         learned = profile.get("learned_from_history", {})
         out += [f"{d} (you usually ask for it)" for d in learned.get("usually_asks_for", [])]
+        usual = usual_changes(profile)
+        out += [f"{x['to']} instead of {x['from']} (your usual swap)" for x in usual["swaps"]]
+        out += [f"no {x} (you usually leave it out)" for x in usual["leaves_out"]]
+        out += [f"with {x} (you usually add it)" for x in usual["adds"]]
+        out += [f"more {x}" for x in usual["more"]] + [f"less {x}" for x in usual["less"]]
         return out
 
     def _remember(self, a: RememberArgs) -> dict:
@@ -568,6 +606,7 @@ class ToolBox:
     def _substitute(self, a: SubstituteArgs) -> dict:
         repl = Ingredient(name=a.replacement, quantity=a.quantity, unit=a.unit, note=a.note)
         out = self.session.substitute(a.ingredient, repl)
+        self._record("swap", out["original"], a.replacement)
         if conflicts := self._conflicts([a.replacement], self._request):
             out["warnings"] = [self._warning_text(c) for c in conflicts]
         return out
@@ -580,16 +619,19 @@ class ToolBox:
             raise InvalidTransition("Tell me which ingredient to change.")
         if a.action == "remove_ingredient":
             out = s.remove_ingredient(a.ingredient)
+            self._record("remove", out["ingredient"])
             if not out["steps_to_update"]:
                 del out["steps_to_update"]
             return out
         if a.action == "add_ingredient":
             out = s.add_ingredient(f"{a.amount} {a.ingredient}" if a.amount else a.ingredient)
+            self._record("add", out["ingredient"])
         else:
             if not a.amount:
                 raise InvalidTransition(f"How much {a.ingredient}? For example '2 tablespoons', 'double' or 'half'.")
             out = s.change_amount(a.ingredient, a.amount)
             more = out.pop("more")
+            self._record("more" if more else "less", out["ingredient"])
             if not more:
                 return out
         if conflicts := self._conflicts([out["ingredient"]], self._request):

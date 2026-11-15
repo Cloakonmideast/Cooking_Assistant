@@ -6,8 +6,11 @@ Two kinds of knowledge, kept apart because they deserve different weight:
   allergic to peanuts", "I don't like mushrooms", "I always have paneer").
   Saved by the ``remember_preference`` tool or ``cooking-agent prefs add``.
 * **Learned** habits, inferred from what the cook does: a diet they keep
-  asking for, how many people they usually cook for, and the ingredients
-  that keep showing up in recipes they actually cook (reached step 1).
+  asking for, how many people they usually cook for, the ingredients
+  that keep showing up in recipes they actually cook (reached step 1), and
+  the changes they keep making (swaps, things left out or added, more or
+  less of something). Every change is saved; it counts as a habit once it
+  happened in ``ADJUST_MIN_TIMES`` different recipes.
 
 ``profile()`` merges both into the dict given to the LLM every turn and to
 the recipe writer. Allergies are always hard rules; learned habits are
@@ -51,6 +54,11 @@ MIN_TIMES = 3
 DIET_SHARE = 0.5
 INGREDIENT_MIN_RECIPES = 2
 TOP_INGREDIENTS = 8
+ADJUST_KINDS = ("swap", "remove", "add", "more", "less")
+ADJUST_MIN_TIMES = 2  # the same change in this many different recipes is a habit
+TOP_ADJUSTMENTS = 8
+_HABIT_KEYS = {"swap": "usually_swaps", "remove": "usually_leaves_out", "add": "usually_adds",
+               "more": "usually_more", "less": "usually_less"}
 
 
 def _norm(text: str) -> str:
@@ -123,6 +131,11 @@ class PreferenceStore:
             "CREATE TABLE IF NOT EXISTS ingredient_use ("
             " name TEXT PRIMARY KEY, recipes INTEGER NOT NULL DEFAULT 0, last_ts REAL NOT NULL);"
             "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+            # One row per change the cook made; load_id is the recipe it was made in, so
+            # repeating a change within one recipe doesn't make it a habit.
+            "CREATE TABLE IF NOT EXISTS adjustments ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, original TEXT NOT NULL,"
+            " replacement TEXT NOT NULL DEFAULT '', load_id INTEGER, ts REAL NOT NULL);"
         )
         self._db.commit()
 
@@ -192,8 +205,30 @@ class PreferenceStore:
                     (key, now))
         self._db.commit()
 
+    def record_adjustment(self, kind: str, original: str, replacement: Optional[str] = None,
+                          load_id: Optional[int] = None) -> None:
+        """Save a change the cook made to a recipe (every time)."""
+        if kind not in ADJUST_KINDS:
+            raise ValueError(f"kind must be one of {', '.join(ADJUST_KINDS)}")
+        original = ingredient_key(original)
+        replacement = ingredient_key(replacement) if replacement else ""
+        if not original or (kind == "swap" and not replacement):
+            return
+        self._db.execute(
+            "INSERT INTO adjustments (kind, original, replacement, load_id, ts) VALUES (?, ?, ?, ?, ?)",
+            (kind, original, replacement, load_id, time.time()))
+        self._db.commit()
+
+    def adjustments(self, min_times: int = 1) -> list[dict]:
+        """Saved changes with the number of different recipes each was made in."""
+        rows = self._db.execute(
+            "SELECT kind, original, replacement, COUNT(DISTINCT COALESCE(load_id, -id)) AS n, MAX(ts) AS last "
+            "FROM adjustments GROUP BY kind, original, replacement HAVING n >= ? ORDER BY n DESC, last DESC",
+            (min_times,)).fetchall()
+        return [{"kind": k, "original": o, "replacement": r or None, "times": n} for k, o, r, n, _ in rows]
+
     def forget_history(self) -> None:
-        self._db.executescript("DELETE FROM requests; DELETE FROM ingredient_use;")
+        self._db.executescript("DELETE FROM requests; DELETE FROM ingredient_use; DELETE FROM adjustments;")
         self._db.commit()
 
     def learned(self) -> dict:
@@ -217,6 +252,16 @@ class PreferenceStore:
             (INGREDIENT_MIN_RECIPES, TOP_INGREDIENTS)).fetchall()
         if used:
             out["often_cooks_with"] = [n for (n,) in used]
+        amount_set: set[str] = set()  # "more" and "less" of the same thing: the more frequent wins
+        for a in self.adjustments(ADJUST_MIN_TIMES):
+            key = _HABIT_KEYS[a["kind"]]
+            if a["kind"] in ("more", "less"):
+                if a["original"] in amount_set:
+                    continue
+                amount_set.add(a["original"])
+            items = out.setdefault(key, [])
+            if len(items) < TOP_ADJUSTMENTS:
+                items.append({"from": a["original"], "to": a["replacement"]} if a["kind"] == "swap" else a["original"])
         return out
 
     # -- combined ------------------------------------------------------------
@@ -226,9 +271,13 @@ class PreferenceStore:
         for row in self.stated():
             out.setdefault(row["category"], []).append(row["value"])
         learned = self.learned()
-        stated_diets = set(out.get("diet", []))
+        said = out.get("diet", [])
+        stated_diets = set(said) | diets_in(" ".join(said))
         if "usually_asks_for" in learned:
-            learned["usually_asks_for"] = [d for d in learned["usually_asks_for"] if d not in stated_diets]
+            # an eggetarian's "veg" requests aren't a stricter vegetarian habit
+            learned["usually_asks_for"] = [
+                d for d in learned["usually_asks_for"]
+                if d not in stated_diets and not (d == "vegetarian" and "eggetarian" in stated_diets)]
             if not learned["usually_asks_for"]:
                 del learned["usually_asks_for"]
         if learned:
@@ -245,15 +294,36 @@ def _diet_rule(stated: str) -> str:
     return diet_hint(known[0]) if known else stated
 
 
+def _safe(profile: dict, items: list[str]) -> list[str]:
+    """Never tell the writer to prefer something the cook can't have ('paneer'
+    + lactose intolerance, 'peanut oil' + peanut allergy, 'chicken' + vegetarian)."""
+    diets = sorted(prefer_eggetarian(diets_in(" ".join(profile.get("diet", [])))) & DIETS.keys())
+    bad = {c.ingredient for c in find_conflicts(items, profile.get("allergy", []), profile.get("condition", []),
+                                                diets=diets)}
+    return [i for i in items if i not in bad]
+
+
+def usual_changes(profile: dict) -> dict:
+    """The learned changes that are safe to apply for this cook."""
+    learned = profile.get("learned_from_history", {})
+    swaps = learned.get("usually_swaps", [])
+    safe_to = set(_safe(profile, [s["to"] for s in swaps]))
+    return {
+        "swaps": [s for s in swaps if s["to"] in safe_to],
+        "leaves_out": learned.get("usually_leaves_out", []),
+        "adds": _safe(profile, learned.get("usually_adds", [])),
+        "more": _safe(profile, learned.get("usually_more", [])),
+        "less": learned.get("usually_less", []),
+    }
+
+
 def describe_for_recipe(profile: dict) -> str:
     """Instructions for the recipe writer, built from ``profile()``."""
     if not profile:
         return ""
 
     def safe(items: list[str]) -> list[str]:
-        # never tell the writer to prefer something the cook can't have ('paneer' + lactose intolerance)
-        bad = {c.ingredient for c in find_conflicts(items, profile.get("allergy", []), profile.get("condition", []))}
-        return [i for i in items if i not in bad]
+        return _safe(profile, items)
 
     lines = []
     if profile.get("allergy"):
@@ -277,6 +347,15 @@ def describe_for_recipe(profile: dict) -> str:
                      "unless the request says otherwise.")
     if often := safe(learned.get("often_cooks_with", [])):
         lines.append(f"- Often cooks with: {', '.join(often)}; use them where natural.")
+    usual = usual_changes(profile)
+    habits = ([f"usually swaps {s['from']} for {s['to']}" for s in usual["swaps"]]
+              + [f"usually leaves out {x}" for x in usual["leaves_out"]]
+              + [f"usually adds {x}" for x in usual["adds"]]
+              + [f"likes more {x}" for x in usual["more"]]
+              + [f"likes less {x}" for x in usual["less"]])
+    if habits:
+        lines.append(f"- Changes they usually make, apply them unless the request says otherwise: "
+                     f"{'; '.join(habits)}.")
     return ("About this cook (the request itself wins where it conflicts, except allergies and health "
             "conditions):\n"
             + "\n".join(lines) + "\n")

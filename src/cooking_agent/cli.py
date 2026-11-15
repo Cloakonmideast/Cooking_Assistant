@@ -227,7 +227,8 @@ async def _prefs(args: argparse.Namespace) -> int:
         return 0 if removed else 1
     elif args.action == "forget-history":
         prefs.forget_history()
-        print("forgot learned habits (recipe requests and ingredient counts); stated preferences kept")
+        print("forgot learned habits (recipe requests, ingredient counts and usual changes); "
+              "stated preferences kept")
     stated = prefs.stated()
     learned = prefs.learned()
     print("stated preferences:" if stated else "stated preferences: none")
@@ -235,7 +236,9 @@ async def _prefs(args: argparse.Namespace) -> int:
         print(f"  {r['category']:<10} {r['value']}")
     print("learned from history:" if learned else "learned from history: nothing yet")
     for k, v in learned.items():
-        print(f"  {k.replace('_', ' ')}: {', '.join(v) if isinstance(v, list) else v}")
+        if isinstance(v, list):
+            v = ", ".join(f"{x['from']} to {x['to']}" if isinstance(x, dict) else str(x) for x in v)
+        print(f"  {k.replace('_', ' ')}: {v}")
     return 0
 
 

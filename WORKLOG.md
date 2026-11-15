@@ -5,6 +5,40 @@ says what was done, why, and how it was checked.
 
 ---
 
+## 2026-11-16 — Phase 2, Task 10: learn and use what the cook changes
+
+* **Saved every time** (`preferences.py`, new `adjustments` table): each swap
+  (`substitute_ingredient`), each ingredient left out, added, or made more or
+  less (`change_recipe`), with the recipe it was made in.
+* **A habit after two different recipes** (`ADJUST_MIN_TIMES = 2`): the same
+  change twice in one recipe doesn't count. `learned()` now also returns
+  `usually_swaps`, `usually_leaves_out`, `usually_adds`, `usually_more`,
+  `usually_less`.
+* **Used**: the recipe writer gets "Changes they usually make, apply them
+  unless the request says otherwise: usually swaps ghee for butter; usually
+  leaves out cashews; likes more garlic..."; the reply mentions them
+  (`tailored_to`). A recipe from the cook's own book is never changed: the
+  result lists `your_usual_changes` that apply to it, and the assistant
+  offers them.
+* **Safety**: a learned swap, addition or "more" that clashes with an
+  allergy, condition or stated diet is never passed on (e.g. "peanut oil"
+  with a peanut allergy).
+* **Learned diet = heads-up only**: if the cook usually asks for vegetarian
+  but never stated it, a recipe with chicken gets a warning ("has chicken,
+  and you usually cook vegetarian") and no rewrite; not when the dish names
+  it ("chicken biryani"), and not when a stated or requested diet applies.
+  An eggetarian whose requests say "veg" is not given a learned vegetarian
+  habit (eggs aren't flagged).
+* `cooking-agent prefs` shows the usual changes ("usually swaps: ghee to
+  butter"); `prefs forget-history` clears them too.
+* README "What it learns" updated.
+* Checked: 14 new tests in `tests/test_learned_habits.py` (13 failed first;
+  one assertion was fixed because "paneer" appears in the vegan rule text
+  itself); full suite 362 passed. Benchmarks and diet-eval don't touch the
+  real preferences database (bench uses none, diet-eval a temporary one).
+
+---
+
 ## 2026-11-16 — Phase 2, Task 9: questions and changes mid-recipe
 
 * **Questions about the dish** ("how do I know the rice is done?", "can I use

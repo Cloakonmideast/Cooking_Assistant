@@ -321,8 +321,20 @@ LLM with each turn and each new recipe:
   "I always have paneer and ghee." "Forget that I don't like mushrooms."
 * **What it learns**, from what you actually do: a diet you've asked for in
   most recent requests (at least 3 times), how many people you usually cook for
-  (used when you don't say), and ingredients that appear in at least two
-  recipes you actually started cooking.
+  (used when you don't say), ingredients that appear in at least two
+  recipes you actually started cooking, and **the changes you keep making**:
+  swaps ("butter instead of ghee"), things you leave out or add, more or less
+  of something. Every change is saved straight away; it becomes a habit once
+  you've made it in two different recipes, so a one-off "no cashews today"
+  doesn't change future recipes.
+
+New recipes apply your usual changes ("I used butter instead of ghee, like you
+usually do"). For a recipe from your own book, it offers them instead and only
+makes them if you say yes. A learned habit is never applied if it clashes
+with an allergy, condition or stated diet. A diet it has only learned (you
+usually ask for vegetarian but never said so) gives a heads-up if a recipe
+breaks it ("this has chicken, and you usually cook vegetarian") but never
+forces a rewrite; only a diet you've stated does that.
 
 New recipes are written to fit: allergies are always excluded, health
 conditions are turned into concrete cooking rules (lactose intolerance: no
@@ -352,7 +364,8 @@ allergies and conditions are never overridden.
   once to be rewritten; if it still conflicts, you get a spoken warning;
 * recipes from your own book are never changed, but you're warned ("Heads up:
   this has milk, which conflicts with lactose intolerance");
-* a substitution into something you can't have is flagged.
+* a substitution, or an ingredient added or increased mid-recipe, into
+  something you can't have is flagged.
 
 This is a helper, not a medical guarantee: word matching can't see hidden
 ingredients in branded products, and the guidance for conditions like
