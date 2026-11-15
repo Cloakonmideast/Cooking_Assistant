@@ -19,7 +19,8 @@
 | 3. Instant command matcher | not started |
 | 4. Wire matcher into agent + offline fallback | not started |
 | 5. Phase-specific tool lists | not started |
-| 6. Choose the model by measuring | not started |
+| 6. Diet check in code (vegetarian, vegan, Jain) | not started |
+| 7. Choose the model by measuring (routing, speed, diet test) | not started |
 
 **Execution approach:** Native: Opus 5.5 builds every task in the main session, Fable (the configured `advisorModel`) advises at decision points, and a fresh Fable reviewer subagent reviews the whole branch at the end. Its findings are fixed and logged before handing back to the user.
 **Branch:** `local-model` (from `windows-py311-fixes`).
@@ -190,7 +191,45 @@ Task 1's tests use a fake client whose message shapes come from documentation; t
 - [ ] **Step 4: Run** `pytest -q` — Expected: all pass.
 - [ ] **Step 5:** WORKLOG, Status; commit `perf: phase-specific tool lists`.
 
-### Task 6: Choose the model by measuring
+### Task 6: Diet check in code (vegetarian, vegan, Jain)
+
+Today only allergies and health conditions are checked in code; diets rely on the instruction to the model, which is riskier with a small local model.
+
+**Files:**
+- Modify: `src/cooking_agent/dietary.py` (`DIETS`, `diet_hint`, `find_conflicts(..., diets=())`), `src/cooking_agent/preferences.py` (`describe_for_recipe` diet line uses `diet_hint`), `src/cooking_agent/tools.py` (`_conflicts`, `_write_recipe`, `_warnings`, `_get_recipe`)
+- Test: `tests/test_dietary_safety.py`, `tests/test_tools.py`
+
+**Interfaces:**
+- Consumes: `diets_in` (`preferences.py`), `_has_word` (`dietary.py`).
+- Produces: `DIETS: dict[str, tuple[list[str], list[str], str]]`: diet -> (forbidden words, look-alikes that are fine, guidance) for `"vegetarian"`, `"vegan"`, `"jain"`:
+  - vegetarian: meat, poultry, fish, seafood, egg, mayonnaise, meat/fish/chicken stock or broth, fish sauce, gelatin, lard. Fine: eggplant, eggless, egg-free, vegan, vegetable stock, chickpea, plant-based.
+  - vegan: everything vegetarian forbids + all dairy (`_DAIRY`), ghee, honey. Fine: the vegetarian look-alikes + `_PLANT_DAIRY`.
+  - jain: everything vegetarian forbids + honey + onion, garlic, potato, carrot, beetroot, radish, ginger, turnip, sweet potato, yam, leek, shallot, spring onion, scallion. Fine: the vegetarian look-alikes + dry ginger, sonth.
+- Produces: `diet_hint(diet: str) -> str`, e.g. `"vegetarian (no meat, fish, eggs, gelatin, or meat or fish stock)"`.
+- Produces: `find_conflicts(ingredient_names, allergies=(), conditions=(), diets=())`; a diet conflict's reason is `"<diet> diet"` (message `"chicken stock (conflicts with vegetarian diet)"`).
+
+**Rules:**
+- Diets checked = stated diets (normalised with `diets_in`) plus diets named in the request's constraints (`"vegan, for four"`). Learned habits are not code-checked (they are suggestions, not rules).
+- **The request wins for diet, as the README promises** ("chicken biryani, just this once"): a diet is skipped when the dish or constraints themselves name something that diet forbids. Allergies and conditions are never skipped.
+- Generated recipe: a diet conflict triggers the same single rewrite as allergies; a remaining one becomes a spoken warning. Saved recipe: warning only, never changed.
+
+- [ ] **Step 1: Write the failing tests**
+  - `test_vegetarian_flags_meat_fish_egg`: `["chicken stock", "2 eggs", "fish sauce", "gelatin"]` with `diets=["vegetarian"]` -> 4 conflicts, reason `"vegetarian diet"`.
+  - `test_vegetarian_lookalikes_ok`: `["chickpeas", "eggplant", "vegetable stock", "eggless mayonnaise"]` -> none.
+  - `test_vegan_flags_dairy_ghee_honey`: `["ghee", "honey", "paneer"]` -> 3; `["coconut milk", "oat milk"]` -> none.
+  - `test_jain_flags_root_vegetables`: `["onion", "garlic", "potato", "ginger"]` -> 4; `["dry ginger powder", "tomato"]` -> none.
+  - `test_diet_hint`: `diet_hint("vegan")` mentions dairy and honey.
+  - `test_generated_meat_rewritten_for_vegetarian` (tools): vegetarian profile; fake LLM returns a recipe with chicken, then one without -> second prompt names the conflict; result has no `warnings`.
+  - `test_request_overrides_diet` (tools): vegetarian profile, `get_recipe(dish="chicken biryani")` returning chicken -> one LLM call, no warnings.
+  - `test_one_off_vegan_constraint_checked` (tools): no stated diet, `constraints="vegan"`, recipe with ghee -> rewritten.
+  - `test_saved_recipe_diet_warning` (tools): saved "Mum's Special" containing chicken, vegetarian profile, request "mum's special" -> warning `"contains chicken (conflicts with vegetarian diet)"`, recipe unchanged.
+  - `test_allergy_never_overridden_by_request` (tools): peanut allergy, `dish="peanut chikki"` -> still rewritten.
+- [ ] **Step 2: Run** `pytest tests/test_dietary_safety.py tests/test_tools.py -v` - Expected: new tests FAIL.
+- [ ] **Step 3: Implement** in `dietary.py`, `preferences.py`, `tools.py`.
+- [ ] **Step 4: Run** `pytest -q` - Expected: all pass.
+- [ ] **Step 5:** README "Safety check" paragraph mentions diets; WORKLOG, Status; commit `feat: code check for vegetarian, vegan and Jain diets`.
+
+### Task 7: Choose the model by measuring
 
 **Files:**
 - Modify: `src/cooking_agent/bench.py`, `src/cooking_agent/cli.py` (`bench --text-stt`, `bench --no-instant`), `src/cooking_agent/config.py` (final `ollama_model` default), `.env.example`, `README.md`
@@ -200,12 +239,13 @@ Task 1's tests use a fake client whose message shapes come from documentation; t
 - Consumes: `FixtureSTT`, `_make_providers`, `run_fixture` (`bench.py`); `AgentConfig.instant_commands` (Task 4).
 - Produces: `_make_providers(fake: bool, fx: Fixture, speech_end_s: float, text_stt: bool = False)`; `text_stt=True` returns `FixtureSTT` with the real LLM and TTS (removes Vosk mishearing the synthetic voice).
 - Produces: `run_benchmark(..., instant: bool = True)`; `--no-instant` builds agents with `AgentConfig(instant_commands=False)` so all ten fixtures reach the model (otherwise the matcher answers seven of them).
+- Produces: `src/cooking_agent/diet_eval.py` with `DIET_CASES` (10 `DietCase(dish, allergy, condition, diet)`) and `async run_diet_eval(llm) -> dict` (per case: valid recipe, conflicts left after the safety check, rewrite needed; summary pass rate); CLI `cooking-agent diet-eval [--out FILE]`. Cases are chosen so the diet must hold (none names a forbidden ingredient): vegetarian pad thai, caesar salad, ramen; vegan kheer, palak paneer; Jain dal tadka, pav bhaji; lactose-intolerant paneer butter masala; celiac pasta; peanut-allergy satay.
 
-- [ ] **Step 1: Write the failing tests:** `test_text_stt_flag_uses_fixture_stt`; `test_no_instant_sends_matched_fixture_to_llm` (fake mode, `next_step` fixture, `instant=False` → scripted LLM was called). Run (FAIL), implement, `pytest -q` (PASS), commit `feat: bench --text-stt --no-instant`.
+- [ ] **Step 1: Write the failing tests:** `test_text_stt_flag_uses_fixture_stt`; `test_no_instant_sends_matched_fixture_to_llm` (fake mode, `next_step` fixture, `instant=False` → scripted LLM was called); `test_diet_eval_scores_cases` (fake LLM returning chicken first then a clean recipe -> vegetarian cases pass with a rewrite counted). Run (FAIL), implement, `pytest -q` (PASS), commit `feat: bench --text-stt --no-instant; diet-eval`.
 - [ ] **Step 2: Approval gate:** pull 2 more candidates (~5 GB each): the current tool-capable 7–9B models in Ollama's library, e.g. `llama3.1:8b` plus one current Gemma or Mistral.
 - [ ] **Step 3: Routing and speed:** per model, `LLM_PROVIDER=ollama OLLAMA_MODEL=<m> cooking-agent bench --text-stt --no-instant --runs 3`; record tool routing accuracy and first-word time.
-- [ ] **Step 4: Recipe check:** per model, `chat` against a throwaway `RECIPE_DB` with profile vegetarian + lactose intolerant, ask "paneer butter masala for two". Pass: validates as `Recipe`, no dairy conflict after the safety check, sensible steps.
-- [ ] **Step 5: Pick** highest routing accuracy with first word under ~1.5 s; set the default in `config.py` and `.env.example`; `ollama rm` the others; results table in README and WORKLOG; Status; commit `chore: choose default local model`.
+- [ ] **Step 4: Diet test:** per model, `LLM_PROVIDER=ollama OLLAMA_MODEL=<m> cooking-agent diet-eval --out bench/diet-<m>.json`; record pass rate and how often a rewrite was needed. Spot-read two recipes per model for sense.
+- [ ] **Step 5: Pick** highest routing accuracy with first word under ~1.5 s and a diet-test pass rate of 10/10 after the safety check (ties: fewer rewrites); set the default in `config.py` and `.env.example`; `ollama rm` the others; results table in README and WORKLOG; Status; commit `chore: choose default local model`.
 - [ ] **Step 6:** Hand back to the user for a manual `cooking-agent run` test (same script as the first test).
 
 ---
@@ -229,3 +269,4 @@ Task 1's tests use a fake client whose message shapes come from documentation; t
   - an automatic diet test (about 10 profile × dish cases) in Task 6;
   - no model training.
 - **2026-11-16** — User approved the plan. Execution: Native with Opus 5.5 building, Fable advising, and a Fable reviewer for the whole branch at the end.
+- **2026-11-16** — User approved the diet proposal: new Task 6 (diet check in code); measuring becomes Task 7 and adds an automatic diet test (`cooking-agent diet-eval`). User approved running the Ollama install and model downloads.
