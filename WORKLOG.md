@@ -18,6 +18,11 @@ says what was done, why, and how it was checked.
 * Proposed in the plan file, not yet approved: a code check for diets and an
   automatic diet test when choosing the local model. No model training.
 * No code changed.
+* Plan approved. How it will be built: Opus 5.5 (this session's model)
+  builds each task; Fable advises at decision points (already the configured
+  advisor); at the end a separate Fable reviewer checks the whole
+  `local-model` branch, and its findings are fixed and logged. No settings
+  needed changing.
 
 ---
 

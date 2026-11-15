@@ -21,7 +21,7 @@
 | 5. Phase-specific tool lists | not started |
 | 6. Choose the model by measuring | not started |
 
-**Execution approach:** not chosen yet (recommended: Native).
+**Execution approach:** Native: Opus 5.5 builds every task in the main session, Fable (the configured `advisorModel`) advises at decision points, and a fresh Fable reviewer subagent reviews the whole branch at the end. Its findings are fixed and logged before handing back to the user.
 **Branch:** `local-model` (from `windows-py311-fixes`).
 
 ## Global Constraints
@@ -228,3 +228,4 @@ Task 1's tests use a fake client whose message shapes come from documentation; t
   - a code check for diets (vegetarian/vegan/Jain) in `dietary.py`, because today only allergies and conditions are code-checked;
   - an automatic diet test (about 10 profile × dish cases) in Task 6;
   - no model training.
+- **2026-11-16** — User approved the plan. Execution: Native with Opus 5.5 building, Fable advising, and a Fable reviewer for the whole branch at the end.
