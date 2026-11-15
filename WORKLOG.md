@@ -5,6 +5,73 @@ says what was done, why, and how it was checked.
 
 ---
 
+## 2026-11-15 — Plan for a local AI model written down
+
+* Decided direction: **keep it simple and local** (no website/phone app,
+  no containers, no paid services for now).
+* New branch `local-model` (from `windows-py311-fixes`) for this work.
+* Plan saved to `docs/superpowers/plans/2026-11-15-local-model.md` and kept up
+  to date as it changes (Status table + Plan history at the bottom). Five
+  tasks: Ollama adapter → instant offline commands → wire them into the agent
+  with an offline fallback → fewer tools per turn → pick the model by
+  measuring.
+* Advisor model: checked that Claude Code's advisor is already set to Fable
+  (`"advisorModel": "fable"` in the user-level `~/.claude/settings.json`,
+  applies to every project). No setting changed.
+* No code changed yet.
+
+---
+
+## 2026-11-15 — First manual voice test: it never replied (Gemini overloaded and rate-limited)
+
+### What happened
+
+`cooking-agent run` started fine, asked the first-run question out loud, and
+Vosk heard the answers ("hello", "i don't have any dietary restrictions i only
+have that i'm vegetarian"). But **no turn ever got a reply**:
+
+| Turn | Heard | What happened |
+|---|---|---|
+| 1 | "i know i know" | Gemini returned **503 UNAVAILABLE: "This model is currently experiencing high demand"** after ~5 s. The spoken apology was cut off by the next utterance. |
+| 2 | "hello" | No reply after 16 s; cancelled when the cook spoke again. |
+| 3 | "i don't have any dietary restrictions…" | No reply after 23 s; session ended. |
+
+### Cause (measured)
+
+**Correction to the earlier entry:** the 20–47 s replies were *not* the
+network. The default model `gemini-3.8-flash` is overloaded on Google's side.
+Measured with the same key, two calls each:
+
+| Model | Result |
+|---|---|
+| `gemini-3.8-flash` (the app's default) | 133 s, then 503 |
+| `gemini-flash-latest` | 187 s, then 503 |
+| `gemini-3.7-flash` | 429 (over free quota) |
+| `gemini-3.5-flash` | **0.8–1.6 s** |
+| `gemini-3.5-flash-lite`, `gemini-flash-lite-latest` | 0.6–1.1 s |
+
+A second problem showed up straight away with `gemini-3.5-flash`: the
+**free tier allows 5 requests per minute per model**, and one spoken turn uses
+1–3 requests (a tool call and its follow-up; `get_recipe` adds one more). A
+`chat` test did setup, wrote a recipe and listed ingredients correctly (first
+word in 1.6–3.4 s), then the next three turns failed with
+**429 RESOURCE_EXHAUSTED … limit: 5 … Please retry in 45s**.
+
+Two app weaknesses made this worse:
+
+* Any Gemini error gives the same "Sorry, something went wrong" line, no retry,
+  no other model tried.
+* While a reply is still being prepared, anything the mic hears cancels it, so
+  during a slow reply the cook repeating themselves restarts the wait.
+
+### What was changed
+
+* `.env`: added `GEMINI_MODEL=gemini-3.5-flash` (local only, not committed).
+
+No code changed yet.
+
+---
+
 ## 2026-11-15 — Tested the real app; offline voice set up; README setup guide
 
 Committed on branch `windows-py311-fixes` (README.md and this log only).
