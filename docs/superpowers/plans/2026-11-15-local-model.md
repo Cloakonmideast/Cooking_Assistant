@@ -20,7 +20,7 @@
 | 4. Wire matcher into agent + offline fallback | done |
 | 5. Phase-specific tool lists | done |
 | 6. Diet check in code (vegetarian, vegan, Jain) | done |
-| 7. Choose the model by measuring (routing, speed, diet test) | not started |
+| 7. Choose the model by measuring (routing, speed, diet test) | done |
 
 **Execution approach:** Native: Opus 5.5 builds every task in the main session, Fable (the configured `advisorModel`) advises at decision points, and a fresh Fable reviewer subagent reviews the whole branch at the end. Its findings are fixed and logged before handing back to the user.
 **Branch:** `local-model` (from `windows-py311-fixes`).

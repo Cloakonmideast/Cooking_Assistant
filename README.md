@@ -396,6 +396,35 @@ The fixtures are synthetic (espeak-ng, regenerate with `bench/make_fixtures.sh`)
 Real recordings in your own kitchen are a better test: add 16-bit mono WAVs to
 the folder and entries to `manifest.json`.
 
+Many fixtures are everyday commands that the app answers itself without the
+LLM (instant commands). To measure the **model**, add `--no-instant` (every
+fixture goes to the LLM) and `--text-stt` (feed each fixture's text instead of
+recognising its audio, so speech-recognition errors don't blur the result).
+
+### Diet test
+
+`cooking-agent diet-eval` asks the LLM for ten recipes where the rule must
+hold but the dish name doesn't give it away (vegetarian pad thai, caesar salad
+and ramen; vegan kheer and chocolate cake; Jain dal tadka and pav bhaji;
+lactose-intolerant paneer butter masala; celiac pasta; peanut-allergy satay).
+Each goes through the normal path (profile in the prompt, the code check, one
+rewrite if needed) and passes if no conflict is left. `--out FILE` keeps the
+recipes for reading.
+
+### Choosing the local model
+
+Measured 2026-11-16 on an RTX 4060 Laptop GPU (8 GB), Ollama 0.40.16,
+`bench --text-stt --no-instant --runs 3` and `diet-eval`:
+
+| Model | Tool routing | LLM first token p50 / p90 | Diet test | Rewrites needed |
+|---|---|---|---|---|
+| **`qwen3:8b`** (default) | 90% (missed "what can I use instead of ghee") | **1.0 s / 1.3 s** | 10/10 | 1 |
+| `llama3.1:8b` | 90% (called a tool for small talk) | 1.5 s / 2.1 s | 10/10 | 1 |
+| `mistral:7b` | 10% (almost never calls tools) | 0.5 s / 0.6 s | 10/10 | 1 |
+
+`qwen3:8b` ties `llama3.1:8b` on accuracy and diets and is about a third
+faster. Everyday commands don't depend on the model at all (instant commands).
+
 ## Barge-in and echo
 
 While the assistant is speaking, the mic is gated (replaced by silence before

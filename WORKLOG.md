@@ -5,6 +5,41 @@ says what was done, why, and how it was checked.
 
 ---
 
+## 2026-11-16 — Task 7: measured three local models; `qwen3:8b` stays the default
+
+* New measuring tools:
+  * `cooking-agent bench --no-instant` sends every clip to the AI (instant
+    commands would otherwise answer several of them without it);
+  * `cooking-agent bench --text-stt` feeds each clip's correct text instead
+    of recognising its audio, so mishearing doesn't blur the comparison;
+  * `cooking-agent diet-eval` (new `diet_eval.py`): 10 recipes where the
+    rule must hold but the dish name doesn't give it away (vegetarian pad
+    thai, vegan chocolate cake, Jain pav bhaji, celiac pasta, peanut-allergy
+    satay...), each scored after the app's own safety check.
+* Results (RTX 4060 8 GB; 10 clips × 3 runs, every clip to the AI):
+
+  | Model | Right action | First AI word (typical / 9 in 10) | Diet test |
+  |---|---|---|---|
+  | **qwen3:8b** | 90% | **1.0 s / 1.3 s** | 10/10 (1 rewrite) |
+  | llama3.1:8b | 90% | 1.5 s / 2.1 s | 10/10 (1 rewrite) |
+  | mistral:7b | 10% (almost never used actions) | 0.5 s / 0.6 s | 10/10 (1 rewrite) |
+
+  qwen3's only miss: "I don't have ghee, what can I use instead" got an
+  answer without the substitute action. llama3.1's: it called an action for
+  small talk.
+* Spot-read two qwen3 recipes: vegetarian pad thai (no fish sauce or egg)
+  and Jain dal tadka (no onion, garlic or ginger) both make sense.
+* **Decision: keep `qwen3:8b`** (same accuracy as llama3.1, about a third
+  faster). Removed `llama3.1:8b` and `mistral:7b` with `ollama rm` (frees
+  ~9 GB).
+* Diet case "vegan palak paneer" from the plan was replaced by "vegan
+  chocolate cake": the dish name contains paneer, so the "request wins for a
+  diet" rule would rightly skip the check and the case would test nothing.
+* README: benchmark switches, the diet test, and the results table.
+* Tests: 5 new (failed first, then passed); suite 272/272.
+
+---
+
 ## 2026-11-16 — Task 6: diets checked in code (vegetarian, vegan, Jain)
 
 * `dietary.py`: new diet rules, checked exactly like allergies:
