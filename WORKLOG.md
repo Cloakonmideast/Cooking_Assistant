@@ -5,6 +5,27 @@ says what was done, why, and how it was checked.
 
 ---
 
+## 2026-11-16 — Task 1: local AI adapter (Ollama)
+
+* New `src/cooking_agent/providers/ollama.py` (`OllamaLLM`): streams replies
+  and tool calls from a local Ollama server, and writes recipes in the app's
+  strict recipe format (one retry if the answer doesn't fit). Always sends a
+  context window of 8192 tokens, so our ~3,200-token prompt is never cut off,
+  and keeps the model loaded between turns.
+* The AI now defaults to the local model (`LLM_PROVIDER=ollama`,
+  `OLLAMA_MODEL=qwen3:8b`). Gemini still works with `LLM_PROVIDER=gemini`.
+* `cooking-agent recipes add` uses Gemini whenever `GEMINI_API_KEY` is set
+  (it can read photos, PDFs and recordings), otherwise the local model. A
+  photo or PDF without a Gemini key now gives a clear message, not a crash.
+* Video transcription only uses Gemini (or Deepgram); a local model is never
+  asked to transcribe.
+* Added dependency `ollama==0.6.3`; README (setup, run table, services and
+  packages) and `.env.example` updated.
+* Tests: 12 new in `tests/test_ollama_adapter.py` (watched them fail first,
+  then pass); full suite 183/183.
+
+---
+
 ## 2026-11-16 — Scope: YouTube Shorts only; diet rules found unchecked
 
 * Recipe import from social media: YouTube Shorts only for now (Instagram

@@ -24,7 +24,7 @@ from dotenv import load_dotenv
 
 from .agent import AgentConfig, CookingAgent
 from .audio import MicSource, SimulatedSink, SoundDeviceSink, dbfs, pcm_rms
-from .config import Settings, make_llm, make_stt, make_tts, open_preferences, open_recipe_store
+from .config import Settings, make_import_llm, make_llm, make_stt, make_tts, open_preferences, open_recipe_store
 from .metrics import MetricsSink
 
 
@@ -120,10 +120,7 @@ async def _recipes(args: argparse.Namespace) -> int:
     settings = Settings.from_env()
     store = open_recipe_store(settings)
     if args.action == "add":
-        try:
-            llm = make_llm(settings)
-        except RuntimeError:  # no GEMINI_API_KEY: fine for pages with recipe data and our own files
-            llm = None
+        llm = make_import_llm(settings)  # Gemini if its key is set, else the local model, else none
         print(f"reading {args.source} ...")
         try:
             result = await import_recipe(args.source, llm=llm, transcriber=make_transcriber(llm),

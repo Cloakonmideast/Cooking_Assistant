@@ -225,7 +225,8 @@ class GeminiTranscriber:
 def make_transcriber(llm: Optional[LLMProvider]) -> Optional[Transcriber]:
     if os.environ.get("DEEPGRAM_API_KEY"):
         return DeepgramTranscriber()
-    return GeminiTranscriber(llm) if llm is not None else None
+    # Only Gemini can transcribe audio; a local model cannot.
+    return GeminiTranscriber(llm) if llm is not None and llm.name == "gemini" else None
 
 
 async def transcribe_url(url: str, fetcher: MediaFetcher, transcriber: Transcriber) -> str:

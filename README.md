@@ -55,12 +55,31 @@ again in every new terminal before using `cooking-agent`.
 Copy the template and fill it in (`copy .env.example .env` on Windows,
 `cp .env.example .env` elsewhere):
 
-* `GEMINI_API_KEY` (**required**): the AI that understands you and writes
-  recipes. Free key at <https://aistudio.google.com/apikey>.
-* `DEEPGRAM_API_KEY` (**recommended**): fast, accurate speech in and out.
+* No key is needed for the AI itself: by default it runs on your computer
+  through Ollama (next section).
+* `GEMINI_API_KEY` (**optional, recommended for importing recipes**): used
+  to read recipe photos, PDFs and recordings, and to transcribe videos when
+  there is no Deepgram key. Free key at <https://aistudio.google.com/apikey>.
+  To use Gemini for the conversation too, set `LLM_PROVIDER=gemini`.
+* `DEEPGRAM_API_KEY` (**optional**): fast, accurate speech in and out.
   Sign up at <https://console.deepgram.com>; new accounts get free credit.
 
 `.env` is git-ignored; never commit it.
+
+### Local AI with Ollama
+
+The assistant's AI runs locally with [Ollama](https://ollama.com): free, no
+rate limits, and it works without internet once the model is downloaded.
+A graphics card with 8 GB of memory runs a 7–9B model comfortably.
+
+```powershell
+winget install Ollama.Ollama      # Windows; on macOS/Linux see ollama.com/download
+ollama pull qwen3:8b              # about 5 GB, once
+```
+
+Ollama runs in the background after install. `cooking-agent diagnose` checks
+it. To use another model: `ollama pull <model>` and set `OLLAMA_MODEL` in
+`.env`.
 
 ### 3. Speech without Deepgram (optional, offline)
 
@@ -88,8 +107,8 @@ Go from simplest to full voice:
 |---|---|---|---|
 | 1 | `cooking-agent demo` | nothing | A scripted cooking session printed as `[you]` / `[assistant]` lines. Proves the install works. |
 | 2 | `cooking-agent diagnose` | `.env` | `[ok]` / `[FAIL]` for audio devices, mic level (speak when asked), speech in, speech out and the AI. Fix any `FAIL` before step 4. `--mic-seconds 0` skips the mic test. |
-| 3 | `cooking-agent chat` | Gemini key | Type to the real assistant. Try "find me a recipe for jeera rice for two", then "ready". Empty line quits. |
-| 4 | `cooking-agent run` | Gemini key + Deepgram key *or* the offline setup | Talk to it. Say "find me a recipe for fried rice". Ctrl+C quits. |
+| 3 | `cooking-agent chat` | Ollama + a model (or a Gemini key with `LLM_PROVIDER=gemini`) | Type to the real assistant. Try "find me a recipe for jeera rice for two", then "ready". Empty line quits. |
+| 4 | `cooking-agent run` | the AI as in step 3, plus a Deepgram key *or* the offline speech setup | Talk to it. Say "find me a recipe for fried rice". Ctrl+C quits. |
 
 The first time you use `chat` or `run`, it asks about allergies, health
 conditions and diet before anything else. Answer, or say "none" or "skip".
@@ -132,7 +151,7 @@ can be swapped by writing one adapter.
 | Role | Default | Offline fallback |
 |---|---|---|
 | Speech-to-text | Deepgram Nova-3, streaming WebSocket with endpointing | Vosk (`VOSK_MODEL_PATH`) |
-| LLM | Gemini (`google-genai`), streaming with function calling | none: an LLM key is required |
+| LLM | Local model through Ollama (`ollama`), streaming with tool calling | Gemini (`google-genai`) with `LLM_PROVIDER=gemini` |
 | Text-to-speech | Deepgram Aura-2, streaming WebSocket, kept open across turns | pyttsx3 (OS voice) |
 
 With `STT_PROVIDER=auto` / `TTS_PROVIDER=auto` (the default) Deepgram is used
@@ -146,7 +165,8 @@ offline ones: `pip install -e ".[offline]"`. All settings are listed in
 
 | Service | Used for | Sent | Needed? |
 |---|---|---|---|
-| Google Gemini API (`gemini-3.8-flash` by default) | Understanding what you say, choosing actions, writing recipes; also reading recipe photos/PDFs and transcribing audio when there is no Deepgram key | The conversation so far, current cooking state, your saved preferences | Yes |
+| Ollama (local, `http://localhost:11434`) | Understanding what you say, choosing actions, writing recipes (default) | Nothing leaves your computer | Yes, by default (or Gemini instead) |
+| Google Gemini API | Reading recipe photos/PDFs/recordings and transcribing videos when the key is set; the whole conversation with `LLM_PROVIDER=gemini` | The recipe file or transcript; with `LLM_PROVIDER=gemini` also the conversation, cooking state and your saved preferences | Optional |
 | Deepgram (`wss://api.deepgram.com`) | Live speech-to-text (Nova-3) and text-to-speech (Aura-2); transcribing recipe videos | Your microphone audio while listening; the assistant's replies as text | Recommended; offline fallback exists |
 | Recipe websites, YouTube, Instagram, TikTok, ... | Only when you run `recipes add <link>` | A normal page/caption request | Only for importing |
 
@@ -157,7 +177,8 @@ local SQLite file (`~/.cooking-agent/recipes.db`).
 
 | Package | What it does here |
 |---|---|
-| `google-genai` | Google's official SDK for Gemini: streaming replies, tool calls, structured recipe output |
+| `ollama` | Talks to the local Ollama server: streaming replies, tool calls, structured recipe output |
+| `google-genai` | Google's official SDK for Gemini (optional provider and recipe import) |
 | `websockets` | Talks to Deepgram's streaming speech APIs directly |
 | `pydantic` | Defines and validates the recipe format and every tool's arguments, so a malformed AI reply is caught |
 | `numpy` | Audio maths: loudness (for barge-in), resampling, the test tones |

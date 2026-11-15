@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Optional
 
 from .providers.base import LLMProvider, STTProvider, TTSProvider
@@ -16,13 +16,17 @@ from .providers.base import LLMProvider, STTProvider, TTSProvider
 log = logging.getLogger(__name__)
 
 DEFAULT_RECIPE_DB = "~/.cooking-agent/recipes.db"
+DEFAULT_OLLAMA_MODEL = "qwen3:8b"
+DEFAULT_OLLAMA_URL = "http://localhost:11434"
 
 
 @dataclass
 class Settings:
     stt: str = "auto"  # auto | deepgram | vosk
     tts: str = "auto"  # auto | deepgram | pyttsx3
-    llm: str = "gemini"
+    llm: str = "ollama"  # ollama (local) | gemini
+    ollama_model: str = DEFAULT_OLLAMA_MODEL
+    ollama_url: str = DEFAULT_OLLAMA_URL
     gemini_model: Optional[str] = None
     gemini_recipe_model: Optional[str] = None
     gemini_thinking_level: Optional[str] = None
@@ -45,7 +49,9 @@ class Settings:
         return cls(
             stt=e("STT_PROVIDER", "auto").lower(),
             tts=e("TTS_PROVIDER", "auto").lower(),
-            llm=e("LLM_PROVIDER", "gemini").lower(),
+            llm=e("LLM_PROVIDER", "ollama").lower(),
+            ollama_model=e("OLLAMA_MODEL") or DEFAULT_OLLAMA_MODEL,
+            ollama_url=e("OLLAMA_URL") or DEFAULT_OLLAMA_URL,
             gemini_model=e("GEMINI_MODEL") or None,
             gemini_recipe_model=e("GEMINI_RECIPE_MODEL") or None,
             gemini_thinking_level=e("GEMINI_THINKING_LEVEL") or None,
@@ -60,12 +66,28 @@ class Settings:
 
 
 def make_llm(s: Settings) -> LLMProvider:
+    if s.llm == "ollama":
+        from .providers.ollama import OllamaLLM
+
+        return OllamaLLM(model=s.ollama_model, url=s.ollama_url)
     if s.llm == "gemini":
         from .providers.gemini import GeminiLLM
 
         return GeminiLLM(model=s.gemini_model, recipe_model=s.gemini_recipe_model,
                          thinking_level=s.gemini_thinking_level)
     raise ValueError(f"unknown LLM_PROVIDER {s.llm!r}")
+
+
+def make_import_llm(s: Settings) -> Optional[LLMProvider]:
+    """The LLM for ``recipes add``: Gemini when its key is set (it can read
+    photos, PDFs and recordings), else the configured LLM, else None (pages
+    with recipe data and our own files need no LLM)."""
+    if os.environ.get("GEMINI_API_KEY"):
+        return make_llm(replace(s, llm="gemini"))
+    try:
+        return make_llm(s)
+    except (RuntimeError, ValueError, ImportError):
+        return None
 
 
 def make_stt(s: Settings) -> STTProvider:
