@@ -57,3 +57,73 @@ def test_cli_bench_writes_json(tmp_path, capsys):
     data = json.loads(out.read_text())
     assert data["turns"][0]["first_tool"] == "set_timer"
     assert "llm_first_token_ms" in capsys.readouterr().out
+
+
+# ------------------------------------------------------------ measuring the model itself
+async def test_no_instant_sends_matched_fixture_to_llm():
+    from cooking_agent.bench import run_benchmark
+
+    with_instant = await run_benchmark(fake=True, realtime=False, only=["next_step"], progress=lambda _: None)
+    assert with_instant["turns"][0]["llm_rounds"] == 0  # answered by an instant command
+    without = await run_benchmark(fake=True, realtime=False, only=["next_step"], instant=False,
+                                  progress=lambda _: None)
+    assert without["turns"][0]["llm_rounds"] >= 1 and without["turns"][0]["tool_ok"]
+
+
+def test_text_stt_flag_uses_fixture_stt(monkeypatch):
+    from cooking_agent.bench import FixtureSTT, _make_providers, load_manifest
+
+    monkeypatch.setenv("LLM_PROVIDER", "ollama")
+    monkeypatch.setenv("TTS_PROVIDER", "pyttsx3")
+    fx = load_manifest(DEFAULT_FIXTURES)[0]
+    stt, llm, _ = _make_providers(False, fx, 1.0, text_stt=True)
+    assert isinstance(stt, FixtureSTT) and llm.name == "ollama"
+
+
+# ------------------------------------------------------------ diet test (diet-eval)
+from cooking_agent.diet_eval import DIET_CASES, run_diet_eval  # noqa: E402
+from cooking_agent.recipe import Recipe  # noqa: E402
+
+
+def _dish(*names):
+    return Recipe.model_validate({"title": "Test", "servings": 2,
+                                  "ingredients": [{"name": n, "quantity": 1} for n in names],
+                                  "steps": [{"instruction": "Cook."}]})
+
+
+class ChickenFirstLLM:
+    """Writes chicken first; fixes it when sent back (or never, if stubborn)."""
+
+    name = "fake"
+
+    def __init__(self, stubborn=False):
+        self.stubborn = stubborn
+
+    async def generate_structured(self, prompt, schema, media=None):
+        if "Your previous version included" in prompt and not self.stubborn:
+            return _dish("rice", "salt")
+        return _dish("chicken", "rice")
+
+
+def test_diet_cases_never_name_a_forbidden_ingredient():
+    from cooking_agent.dietary import find_conflicts
+
+    assert len(DIET_CASES) == 10
+    for case in DIET_CASES:
+        if case.diet:
+            assert not find_conflicts([case.dish], diets=[case.diet]), case
+
+
+async def test_diet_eval_scores_cases():
+    report = await run_diet_eval(ChickenFirstLLM(), progress=lambda _: None)
+    s = report["summary"]
+    diet_cases = sum(1 for c in DIET_CASES if c.diet)
+    assert s["total"] == 10 and s["passed"] == 10 and s["errors"] == 0
+    assert s["rewrites"] == diet_cases  # every diet case needed one rewrite
+
+
+async def test_diet_eval_counts_failures():
+    report = await run_diet_eval(ChickenFirstLLM(stubborn=True), progress=lambda _: None)
+    assert report["summary"]["passed"] == 10 - sum(1 for c in DIET_CASES if c.diet)
+    failed = [c for c in report["cases"] if not c["passed"]]
+    assert all("chicken" in " ".join(c["warnings"]) for c in failed)

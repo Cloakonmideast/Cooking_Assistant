@@ -233,12 +233,28 @@ async def _bench(args: argparse.Namespace) -> int:
 
     report = await run_benchmark(Path(args.fixtures) if args.fixtures else DEFAULT_FIXTURES,
                                  runs=args.runs, fake=args.fake, realtime=not args.no_realtime,
-                                 only=args.only or None, timeout_s=args.timeout)
+                                 only=args.only or None, timeout_s=args.timeout,
+                                 text_stt=args.text_stt, instant=not args.no_instant)
     print(format_report(report))
     if args.out:
         Path(args.out).write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
         print(f"wrote {args.out}")
     return 1 if report["summary"]["errors"] else 0
+
+
+# ------------------------------------------------------------------ diet-eval
+async def _diet_eval(args: argparse.Namespace) -> int:
+    import json
+    from pathlib import Path
+
+    from .diet_eval import format_diet_report, run_diet_eval
+
+    report = await run_diet_eval(make_llm(Settings.from_env()))
+    print(format_diet_report(report))
+    if args.out:
+        Path(args.out).write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+        print(f"wrote {args.out}")
+    return 0 if report["summary"]["passed"] == report["summary"]["total"] else 1
 
 
 # ------------------------------------------------------------------ diagnose
@@ -359,6 +375,13 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--fixtures", default=None, help="directory with manifest.json (default bench/fixtures)")
     b.add_argument("--timeout", type=float, default=45.0, help="seconds per fixture")
     b.add_argument("--out", default=None, help="write the full JSON report here")
+    b.add_argument("--text-stt", action="store_true",
+                   help="feed each fixture's text instead of recognising its audio (compare LLMs, not STT)")
+    b.add_argument("--no-instant", action="store_true",
+                   help="send every fixture to the LLM; instant commands off (measure the model itself)")
+
+    de = sub.add_parser("diet-eval", help="check that the LLM's recipes keep to diets, allergies and conditions")
+    de.add_argument("--out", default=None, help="write the full JSON report here")
 
     d = sub.add_parser("diagnose", help="check devices, mic level and providers")
     d.add_argument("--mic-seconds", type=float, default=3.0, help="0 to skip the mic test")
@@ -370,7 +393,7 @@ def main(argv: list[str] | None = None) -> int:
     for noisy in ("httpx", "websockets", "google_genai"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
     handler = {"run": _run, "chat": _chat, "demo": _demo, "bench": _bench, "recipes": _recipes, "prefs": _prefs, "setup": _setup,
-               "diagnose": _diagnose}[args.cmd]
+               "diagnose": _diagnose, "diet-eval": _diet_eval}[args.cmd]
     try:
         return asyncio.run(handler(args))
     except KeyboardInterrupt:
