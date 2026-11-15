@@ -21,7 +21,7 @@
 | 5. Phase-specific tool lists | done |
 | 6. Diet check in code (vegetarian, vegan, Jain) | done |
 | 7. Choose the model by measuring (routing, speed, diet test) | done |
-| 8. Eggetarian diet | not started |
+| 8. Eggetarian diet | done |
 | 9. Questions and changes mid-recipe | not started |
 | 10. Learn and use everything the cook prefers | not started |
 | 11. Keep the model loaded (15-min and pre-timer pings) | not started |

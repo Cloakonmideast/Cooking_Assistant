@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field, ValidationError
 from .providers.base import LLMProvider, ToolCall, ToolResult, ToolSpec
 from .recipe import Ingredient, Recipe, Step, format_minutes, parse_ingredient_line
 from .dietary import DIETS, find_conflicts, requested_words
-from .preferences import CATEGORIES, PreferenceStore, describe_for_recipe, diets_in
+from .preferences import CATEGORIES, PreferenceStore, describe_for_recipe, diets_in, prefer_eggetarian
 from .recipe_store import RecipeStore
 from .state import Awaiting, CookingPhase, CookingSession, InvalidTransition, RecipeDraft
 from .timers import TimerError, TimerManager
@@ -97,7 +97,8 @@ class DraftRemoveArgs(BaseModel):
 class RememberArgs(BaseModel):
     category: Literal[CATEGORIES] = Field(description=(  # type: ignore[valid-type]
         "allergy (a food they react to), condition (health condition or intolerance that affects food, e.g. "
-        "lactose intolerance, celiac disease, diabetes, high blood pressure), diet (vegetarian, vegan, ...), "
+        "lactose intolerance, celiac disease, diabetes, high blood pressure), diet (vegetarian, vegan, "
+        "eggetarian = vegetarian who eats eggs, jain, ...), "
         "dislike (ingredient or food they avoid), like (flavours, cuisines, spice level), pantry (ingredients "
         "they usually have), other."))
     value: str = Field(min_length=1, description="Short phrase, e.g. 'peanuts', 'lactose intolerance', "
@@ -368,7 +369,7 @@ class ToolBox:
         "vegan, for four") and the forbidden ingredients the cook asked for by
         name ("chicken biryani, just this once"): for a diet, the request wins
         for those ingredients only."""
-        wanted = diets_in(" ".join(profile.get("diet", []))) | diets_in(request)
+        wanted = prefer_eggetarian(diets_in(" ".join(profile.get("diet", []))) | diets_in(request))
         diets = sorted(d for d in wanted if d in DIETS)
         return diets, requested_words(request, diets)
 

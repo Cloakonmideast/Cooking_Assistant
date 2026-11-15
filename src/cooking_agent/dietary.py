@@ -105,6 +105,10 @@ DIETS: dict[str, tuple[list[tuple[list[str], list[str]]], str]] = {
     "vegan": ([_VEGETARIAN_PART, (_DAIRY + ["ghee"], _PLANT_DAIRY), (["honey"], [])],
               "no meat, fish, eggs, dairy (milk, butter, ghee, paneer, cheese, cream, yogurt) or honey; "
               "plant milks and oils are fine"),
+    "eggetarian": ([(_MEAT + _SEAFOOD, _VEG_OK)],
+                   "vegetarian but eggs are fine: no meat, poultry, fish, seafood, gelatin, or meat or fish stock"),
+    "eggless": ([(_EGGS, ["eggplant", "eggless", "egg-free", "egg free", "vegan", "plant-based", "plant based"])],
+                "no eggs or anything made with them (mayonnaise, meringue)"),
     "jain": ([_VEGETARIAN_PART, (["honey"], []), (_ROOTS, ["dry ginger", "sonth"])],
              "vegetarian with no eggs or honey, and no onion, garlic, potato, carrot, ginger or other root "
              "vegetables (dry ginger powder is fine)"),

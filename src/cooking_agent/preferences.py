@@ -33,6 +33,8 @@ CATEGORIES = ("allergy", "condition", "diet", "dislike", "like", "pantry", "othe
 
 # Constraint words that describe a diet, for spotting a habit in requests.
 DIET_WORDS = {
+    "eggetarian": "eggetarian", "eggitarian": "eggetarian", "ovo vegetarian": "eggetarian",
+    "ovo-vegetarian": "eggetarian",
     "vegetarian": "vegetarian", "veg": "vegetarian", "veggie": "vegetarian", "vegan": "vegan",
     "eggless": "eggless", "jain": "jain", "gluten-free": "gluten-free", "gluten free": "gluten-free",
     "dairy-free": "dairy-free", "dairy free": "dairy-free", "low-carb": "low-carb", "low carb": "low-carb",
@@ -66,8 +68,32 @@ _NEGATED = re.compile(r"(?<![a-z])(?:non|not|no)[\s-]+$")
 _VEG_AS_VEGETABLES = re.compile(r"(?<![a-z])(?:of|more|less|some|any|the|with|extra|fresh|mixed|seasonal)\s+$")
 
 
+# "vegetarian but I eat eggs", "eggs are fine", "I eat eggs but no meat": a vegetarian who eats eggs.
+_EATS_EGGS = re.compile(r"(?<![a-z])(?:(?:eat|eats|have|has|take|takes|having|eating)\s+eggs?"
+                        r"|eggs?\s+(?:are|is)\s+(?:fine|ok|okay|allowed|alright))(?![a-z])")
+_EGGS_NEGATED = re.compile(r"(?:n't|not|never|no)\s+(?:\w+\s+)?$")
+_NO_MEAT = re.compile(r"(?<![a-z])(?:no|not|without|don't eat|do not eat|never eat)\s+(?:any\s+)?meat(?![a-z])")
+
+
+def _eats_eggs(t: str) -> bool:
+    return any(not _EGGS_NEGATED.search(t[: m.start()]) for m in _EATS_EGGS.finditer(t))
+
+
 def diets_in(text: Optional[str]) -> set[str]:
     t = f" {_norm(text or '')} "
+    found = _diet_words_in(t)
+    if _eats_eggs(t) and (found & {"vegetarian", "eggetarian"} or _NO_MEAT.search(t)):
+        found.add("eggetarian")
+    return prefer_eggetarian(found)
+
+
+def prefer_eggetarian(diets: set[str]) -> set[str]:
+    """Eggetarian is vegetarian plus eggs: when both are named, the more
+    specific one applies (an eggless request still checks eggs via 'eggless')."""
+    return diets - {"vegetarian"} if "eggetarian" in diets else diets
+
+
+def _diet_words_in(t: str) -> set[str]:
     found: set[str] = set()
     for word, diet in DIET_WORDS.items():
         for m in re.finditer(rf"(?<![a-z]){re.escape(word)}(?![a-z-])", t):

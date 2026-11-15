@@ -5,6 +5,28 @@ says what was done, why, and how it was checked.
 
 ---
 
+## 2026-11-16 — Phase 2, Task 8: eggetarian diet
+
+* New diet **eggetarian** (`dietary.py`): everything a vegetarian avoids except
+  eggs (no meat, poultry, fish, seafood, gelatin, meat or fish stock).
+* Recognised from: "eggetarian", "eggitarian", "ovo-vegetarian", "vegetarian
+  but I eat eggs", "eggs are fine/ok", "vegetarian who eats eggs", and "I eat
+  eggs but no meat" (no "vegetarian" needed). "Vegetarian, I don't eat eggs" /
+  "no eggs" stays plain vegetarian (`preferences.diets_in`).
+* When both are named (stated eggetarian, request "veg fried rice"),
+  eggetarian wins, so eggs aren't flagged (`prefer_eggetarian`, applied after
+  the stated and requested diets are combined).
+* **Eggless** is now a checked diet too (no eggs, mayonnaise, meringue), so an
+  "eggless sponge cake" request from an eggetarian is still checked for eggs.
+* The recipe writer is told "eggetarian (vegetarian but eggs are fine: ...)";
+  the `remember_preference` tool description lists eggetarian so the model
+  saves that word.
+* README "Safety check" updated.
+* Checked: 17 new tests in `tests/test_dietary_safety.py` failed first, then
+  passed; full suite 328 passed.
+
+---
+
 ## 2026-11-16 — Removed the Claude "Co-Authored-By" line from all commits
 
 * Claude Code settings (`~/.claude/settings.json`, applies to every project):

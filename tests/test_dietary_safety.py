@@ -258,3 +258,62 @@ async def test_allergy_never_overridden_by_request(tmp_path):
     llm = SequenceLLM([dish("peanuts", "jaggery"), dish("sesame", "jaggery")])
     await call(diet_box(tmp_path, llm, allergy="peanuts"), "get_recipe", dish="peanut chikki")
     assert len(llm.prompts) == 2
+
+
+# ------------------------------------------------------------------ eggetarian (Phase 2, Task 8)
+from cooking_agent.preferences import diets_in  # noqa: E402
+from cooking_agent.tools import RememberArgs  # noqa: E402
+
+
+def test_eggetarian_allows_eggs_not_meat():
+    assert diet_flagged(["2 eggs", "mayonnaise", "paneer"], "eggetarian") == []
+    assert [i for i, _ in diet_flagged(["chicken", "fish sauce", "gelatin"], "eggetarian")] == \
+        ["chicken", "fish sauce", "gelatin"]
+
+
+@pytest.mark.parametrize("said", [
+    "eggetarian", "Eggitarian", "ovo-vegetarian", "ovo vegetarian", "vegetarian but I eat eggs",
+    "I'm vegetarian, eggs are fine", "veg but eggs are ok", "vegetarian who eats eggs",
+    "I eat eggs but no meat", "we eat eggs, no meat or fish",
+])
+def test_egg_eating_vegetarian_phrases(said):
+    assert diets_in(said) == {"eggetarian"}
+
+
+@pytest.mark.parametrize("said", ["vegetarian, I don't eat eggs", "vegetarian and I never eat eggs",
+                                  "vegetarian, no eggs"])
+def test_vegetarian_without_eggs_stays_vegetarian(said):
+    assert diets_in(said) == {"vegetarian"}
+
+
+def test_eggless_unchanged():
+    assert diets_in("eggless chocolate cake") == {"eggless"}
+    assert [i for i, _ in diet_flagged(["2 eggs", "mayonnaise", "eggplant", "flax seeds"], "eggless")] == \
+        ["2 eggs", "mayonnaise"]
+
+
+def test_eggetarian_recipe_writer_rule():
+    text = describe_for_recipe({"diet": ["vegetarian but I eat eggs"]})
+    assert "eggs are fine" in text and "no meat" in text
+
+
+def test_remember_tool_knows_eggetarian():
+    assert "eggetarian" in RememberArgs.model_json_schema()["properties"]["category"]["description"]
+
+
+async def test_stated_eggetarian_with_veg_request_keeps_eggs(tmp_path):
+    llm = SequenceLLM([dish("eggs", "rice")])
+    out = await call(diet_box(tmp_path, llm, diet="eggetarian"), "get_recipe", dish="veg fried rice")
+    assert len(llm.prompts) == 1 and "warnings" not in out
+
+
+async def test_stated_eggetarian_still_rewrites_meat(tmp_path):
+    llm = SequenceLLM([dish("chicken", "eggs", "rice"), dish("eggs", "rice")])
+    await call(diet_box(tmp_path, llm, diet="vegetarian but eggs are ok"), "get_recipe", dish="fried rice")
+    assert len(llm.prompts) == 2 and "chicken (conflicts with eggetarian diet)" in llm.prompts[1]
+
+
+async def test_eggless_request_checks_eggs_for_an_eggetarian(tmp_path):
+    llm = SequenceLLM([dish("eggs", "flour"), dish("flax seeds", "flour")])
+    await call(diet_box(tmp_path, llm, diet="eggetarian"), "get_recipe", dish="eggless sponge cake")
+    assert len(llm.prompts) == 2 and "eggs (conflicts with eggless diet)" in llm.prompts[1]
