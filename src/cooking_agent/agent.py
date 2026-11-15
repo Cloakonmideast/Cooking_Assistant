@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from typing import AsyncIterator, Callable, Optional
 
 from .audio import AudioSink, MicGate
+from .commands import match_command, speak_result
 from .metrics import MetricsSink, TurnMetrics, now
 from .providers.base import (
     LLMProvider,
@@ -140,6 +141,9 @@ SETUP_QUESTION = (
     "like vegetarian or vegan? If not, just say none."
 )
 INTERRUPTED_NOTE = "[The user interrupted your previous reply while it was being spoken.]"
+LLM_UNAVAILABLE = ("I can't reach the AI model right now. I can still go to the next step, repeat it, "
+                   "set timers, and cook recipes from your recipe book.")
+SETUP_LATER = "You can finish setup later by typing cooking-agent setup."
 MAX_TOOL_ROUNDS = 4
 MAX_HISTORY_MESSAGES = 40
 
@@ -152,6 +156,7 @@ class AgentConfig:
     barge_in_threshold_dbfs: float = -35.0
     barge_in_ratio: float = 1.5
     echo_tail_ms: int = 250
+    instant_commands: bool = True  # handle everyday commands without the LLM (commands.py)
 
 
 @dataclass
@@ -191,6 +196,10 @@ class CookingAgent:
         self._turn_counter = 0
         self._last_spoke_at = 0.0
         self._interrupted_last_turn = False
+        # True only while the app's own question was the last thing asked, so a
+        # bare "yes"/"no" can be answered instantly; any other turn clears it.
+        self._question_fresh = False
+        self._setup_fresh = False  # same, for the first-run allergies/diet question
         self._stopped = asyncio.Event()
 
     # ================================================================ running
@@ -238,6 +247,7 @@ class CookingAgent:
         if self.tools.prefs is None:
             return False
         self.session.setup_pending = True
+        self._setup_fresh = True
         self._announcements.put_nowait(SETUP_QUESTION)
         return True
 
@@ -270,7 +280,8 @@ class CookingAgent:
         # tell it so on the next turn (provider-neutral; no history rewriting).
         llm_text = f"{INTERRUPTED_NOTE} {accepted}" if self._interrupted_last_turn else accepted
         self._interrupted_last_turn = False
-        out.task = asyncio.create_task(self._run_turn(llm_text, out), name=f"turn-{m.turn_id}")
+        # Commands are matched on the words as spoken, without the note above.
+        out.task = asyncio.create_task(self._run_turn(llm_text, out, raw=accepted), name=f"turn-{m.turn_id}")
         self._output = out
         return out.task
 
@@ -355,10 +366,10 @@ class CookingAgent:
                     self.turn.to(TurnState.LISTENING)
 
     # ================================================================ turn
-    async def _run_turn(self, user_text: str, out: _Output) -> None:
+    async def _run_turn(self, user_text: str, out: _Output, raw: Optional[str] = None) -> None:
         m = out.metrics
         assert m is not None
-        producer = asyncio.create_task(self._think(user_text, out), name=f"llm-{m.turn_id}")
+        producer = asyncio.create_task(self._think(user_text, out, raw), name=f"llm-{m.turn_id}")
         try:
             await self._play(out)
             await producer  # surface LLM/tool errors
@@ -399,70 +410,41 @@ class CookingAgent:
             state["cook_profile"] = self.tools.prefs.profile()
         return SYSTEM_PROMPT.format(state=json.dumps(state))
 
-    async def _think(self, user_text: str, out: _Output) -> None:
-        """LLM producer: stream model rounds, run tool calls, push speakable segments."""
+    async def _think(self, user_text: str, out: _Output, raw: Optional[str] = None) -> None:
+        """Producer for one turn: an instant command if the words are one,
+        otherwise stream model rounds and run tool calls; push speakable segments."""
         m = out.metrics
         assert m is not None
         q = out.queue
+        raw = user_text if raw is None else raw
         committed: list[Message] = [Message("user", user_text)]
         spoken: list[str] = []
-        all_results: list[ToolResult] = []
-        gave_up = False
 
         def emit(seg: str) -> None:
             spoken.append(seg)
             q.put_nowait(seg)
 
+        # A question the app asked counts as "just asked" for this turn only.
+        question_fresh, setup_fresh = self._question_fresh, self._setup_fresh
+        self._question_fresh = self._setup_fresh = False
+        match = None
+        if self.config.instant_commands:
+            match = match_command(raw, self.session, self.tools.store, self.timers.active_names,
+                                  self.session.awaiting if question_fresh else None,
+                                  setup_open=setup_fresh and self.session.setup_pending)
         try:
-            for _ in range(MAX_TOOL_ROUNDS):
-                m.llm_rounds += 1
-                seg = SentenceSegmenter()
-                calls = []
-                reply: Optional[Message] = None
-                async for ev in self.llm.stream(self._system_prompt(), self.history + committed, self.tools.specs()):
-                    m.mark_llm_event()
-                    if isinstance(ev, TextDelta):
-                        for s in seg.push(ev.text):
-                            emit(s)
-                    elif isinstance(ev, ToolCallEvent):
-                        calls.append(ev.call)
-                        for s in seg.flush():  # speak what came before the tool call now
-                            emit(s)
-                    elif isinstance(ev, TurnComplete):
-                        reply = ev.message
-                for s in seg.flush():
-                    emit(s)
-                if reply is None:
-                    raise RuntimeError("LLM stream ended without TurnComplete")
-                if reply.text:
-                    self.on_text("assistant", reply.text)
-                if not calls:
-                    committed.append(reply)
-                    break
-                if any(c.name == "get_recipe" for c in calls) and not spoken:
-                    emit(FILLER_GET_RECIPE)
-                    m.first_audio_was_filler = True  # refined in _play if audio came earlier
-                results = []
-                for c in calls:  # sequential on purpose: order matters (e.g. next_step twice)
-                    m.tool_calls.append(c.name)
-                    results.append(await self.tools.dispatch(c))
-                all_results += results
-                committed.append(reply)
-                committed.append(Message("tool", tool_results=results))
-                step_text = self._step_speech(results)
-                if step_text is not None:
-                    # Read the step ourselves, word for word, instead of asking
-                    # the model to: exact wording and one LLM round fewer.
-                    emit(step_text)
-                    self.on_text("assistant", step_text)
-                    committed.append(Message("assistant", step_text))
-                    break
+            if match is not None:
+                committed = [Message("user", raw)]
+                await self._instant(match, committed, spoken, emit, m)
             else:
-                gave_up = True
-                emit("Sorry, I got stuck on that one. Could you say it another way?")
-                committed.append(Message("assistant", "(gave up after too many tool calls)"))
-            if not gave_up:
-                self._ask_follow_up(all_results, committed, spoken, emit)
+                try:
+                    await self._llm_rounds(committed, spoken, emit, m)
+                except Exception:
+                    log.exception("LLM turn failed")
+                    msg = LLM_UNAVAILABLE + (f" {SETUP_LATER}" if self.session.setup_pending else "")
+                    emit(msg)
+                    self.on_text("assistant", msg)
+                    committed = [committed[0], Message("assistant", msg)]  # drop any half-finished round
         except asyncio.CancelledError:
             self._commit_interrupted(committed, spoken)
             raise
@@ -470,6 +452,76 @@ class CookingAgent:
             self._commit(committed)
         finally:
             q.put_nowait(_END)
+
+    async def _instant(self, match, committed: list[Message], spoken: list[str],
+                       emit: Callable[[str], None], m: TurnMetrics) -> None:
+        """Run an instant command's tools and speak a fixed reply; no LLM.
+        Recorded in the history as plain text, valid for every provider."""
+        results: list[ToolResult] = []
+        for c in match.calls:
+            m.tool_calls.append(c.name)
+            results.append(await self.tools.dispatch(c))
+        text = self._step_speech(results) or speak_result(results) or match.reply or ""
+        if text:
+            emit(text)
+            self.on_text("assistant", text)
+        committed.append(Message("assistant", text))
+        self._ask_follow_up(results, committed, spoken, emit)
+        if not match.calls and self.session.awaiting is not None:
+            self._question_fresh = True  # "not yet": the app's question is still the open one
+
+    async def _llm_rounds(self, committed: list[Message], spoken: list[str], emit: Callable[[str], None],
+                          m: TurnMetrics) -> None:
+        """Stream model rounds, run tool calls, and append the turn to ``committed``."""
+        all_results: list[ToolResult] = []
+        for _ in range(MAX_TOOL_ROUNDS):
+            m.llm_rounds += 1
+            seg = SentenceSegmenter()
+            calls = []
+            reply: Optional[Message] = None
+            async for ev in self.llm.stream(self._system_prompt(), self.history + committed, self.tools.specs()):
+                m.mark_llm_event()
+                if isinstance(ev, TextDelta):
+                    for s in seg.push(ev.text):
+                        emit(s)
+                elif isinstance(ev, ToolCallEvent):
+                    calls.append(ev.call)
+                    for s in seg.flush():  # speak what came before the tool call now
+                        emit(s)
+                elif isinstance(ev, TurnComplete):
+                    reply = ev.message
+            for s in seg.flush():
+                emit(s)
+            if reply is None:
+                raise RuntimeError("LLM stream ended without TurnComplete")
+            if reply.text:
+                self.on_text("assistant", reply.text)
+            if not calls:
+                committed.append(reply)
+                break
+            if any(c.name == "get_recipe" for c in calls) and not spoken:
+                emit(FILLER_GET_RECIPE)
+                m.first_audio_was_filler = True  # refined in _play if audio came earlier
+            results = []
+            for c in calls:  # sequential on purpose: order matters (e.g. next_step twice)
+                m.tool_calls.append(c.name)
+                results.append(await self.tools.dispatch(c))
+            all_results += results
+            committed.append(reply)
+            committed.append(Message("tool", tool_results=results))
+            step_text = self._step_speech(results)
+            if step_text is not None:
+                # Read the step ourselves, word for word, instead of asking
+                # the model to: exact wording and one LLM round fewer.
+                emit(step_text)
+                self.on_text("assistant", step_text)
+                committed.append(Message("assistant", step_text))
+                break
+        else:
+            emit("Sorry, I got stuck on that one. Could you say it another way?")
+            committed.append(Message("assistant", "(gave up after too many tool calls)"))
+            return
+        self._ask_follow_up(all_results, committed, spoken, emit)
 
     @staticmethod
     def _step_speech(results: list[ToolResult]) -> Optional[str]:
@@ -493,6 +545,7 @@ class CookingAgent:
             return  # the model already ended on a question; don't stack a second one
         emit(question)
         self.on_text("assistant", question)
+        self._question_fresh = True  # a bare "yes"/"no" next turn answers this
         last = committed[-1]  # the final reply of the turn, text only
         committed[-1] = Message("assistant", f"{last.text} {question}".strip())
 

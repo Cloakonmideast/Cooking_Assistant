@@ -5,6 +5,40 @@ says what was done, why, and how it was checked.
 
 ---
 
+## 2026-11-16 — Task 4: instant commands connected to the assistant; offline message
+
+* `agent.py`: before asking the AI, every utterance is checked by the
+  instant-command matcher (Task 3). If it's one ("next", "say that again",
+  "set a rice timer for twelve minutes", "cook my dal"...), the action runs
+  straight away and a fixed reply is spoken. No AI involved, so it's
+  instant and works with no model and no internet.
+* A bare "yes"/"no" is only answered instantly right after the app's own
+  question ("start a timer?", "ready for the next step?"). After anything
+  else it goes to the AI, so an old question can't make "yes" skip a step.
+  "Not yet" keeps the question open.
+* Commands spoken right after interrupting the assistant still work: matching
+  uses your words, not the "you were interrupted" note added for the AI.
+* Right after the first-run allergies/diet question, "no", "yes", "next" and
+  "that's all" are treated as answers to it (they go to the AI); clear
+  commands like "cook my dal" or timers still work.
+* If the AI can't be reached (Ollama not running, no internet with Gemini),
+  the assistant now says: "I can't reach the AI model right now. I can still
+  go to the next step, repeat it, set timers, and cook recipes from your
+  recipe book." (plus how to finish setup if it's still pending). It's also
+  printed in `chat`, which used to show nothing.
+* Instant turns are kept in the conversation history as plain text, which
+  works with both Ollama and Gemini.
+* `AgentConfig(instant_commands=False)` turns the feature off (the model
+  benchmark in Task 7 uses this).
+* Tests: 13 new agent tests and 2 more matcher tests (failed first, then
+  passed). Existing tests that deliberately test the AI's own step pacing now
+  run with instant commands off; the history-shape test and the benchmark
+  test were updated for instant turns (the fake benchmark: 4 of 10 clips are
+  now answered instantly, routing still 100%). Suite 249/249; demo runs to
+  the end.
+
+---
+
 ## 2026-11-16 — Task 2: tried the real local model (and fixed two bugs it exposed)
 
 * Installed Ollama 0.40.16 (`winget`) and downloaded `qwen3:8b` (5.2 GB).

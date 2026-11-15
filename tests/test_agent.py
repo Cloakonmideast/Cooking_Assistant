@@ -37,7 +37,9 @@ async def test_tool_turn_updates_state_and_history(recipe):
     assert tts.spoken[-2:] == ["Step 1. Soak the rice for 20 minutes.",
                                "Do you want me to start a timer for 20 minutes?"]
     roles = [m.role for m in agent.history]
-    assert roles == ["user", "assistant", "tool", "assistant"] * 2
+    # turn 1 went through the LLM (tool-shaped); "next step please" is an
+    # instant command, recorded as plain text
+    assert roles == ["user", "assistant", "tool", "assistant", "user", "assistant"]
     assert agent.metrics.turns[1]["tool_calls"] == ["next_step"]
     assert agent.turn.state is TurnState.LISTENING
 
@@ -244,7 +246,9 @@ def test_percentile():
 
 # ------------------------------------------------------------------ step pacing
 def pacing_agent(recipe):
-    return make_agent(recipe, script={
+    # These tests exercise the LLM's own step pacing, so instant commands
+    # (which would answer "ready" and "yes" before the LLM) are off here.
+    return make_agent(recipe, instant_commands=False, script={
         "recipe": [ToolCall("get_recipe", {"dish": "jeera rice"})],
         "start it": ["Okay.", ToolCall("start_step_timer", {"name": "rice"})],
         "no thanks": ["No problem."],
@@ -331,3 +335,157 @@ async def test_steps_are_read_word_for_word_without_another_llm_round(recipe):
     # history stays well-formed: call, result, then what was said
     assert [m.role for m in agent.history[-3:]] == ["assistant", "tool", "assistant"]
     assert agent.history[-1].text.startswith("Step 3, the last step.")
+
+
+# ------------------------------------------------------------ instant commands (no LLM)
+from cooking_agent.agent import LLM_UNAVAILABLE, SETUP_LATER  # noqa: E402
+from cooking_agent.preferences import PreferenceStore  # noqa: E402
+from cooking_agent.recipe_store import RecipeStore  # noqa: E402
+from cooking_agent.tools import READY_QUESTION  # noqa: E402
+
+
+class NoLLM:
+    """Counts calls; raises ``exc`` (default: the test must not reach the LLM)."""
+
+    name = "no-llm"
+
+    def __init__(self, exc=None):
+        self.calls = 0
+        self.exc = exc
+
+    async def stream(self, system, history, tools):
+        self.calls += 1
+        raise self.exc or AssertionError("LLM must not be called")
+        yield  # pragma: no cover  (makes this an async generator)
+
+    async def generate_structured(self, prompt, schema, media=None):
+        self.calls += 1
+        raise self.exc or AssertionError("LLM must not be called")
+
+
+def offline_agent(recipe, tmp_path, *, exc=None, setup=False, loaded=True):
+    store = RecipeStore(tmp_path / "book.db")
+    store.add(recipe.model_copy(update={"title": "Mum's Dal"}), source="test")
+    prefs = PreferenceStore(tmp_path / "book.db") if setup else None
+    llm, tts, texts = NoLLM(exc), ToneTTS(), []
+    agent = CookingAgent(QueueSTT(), llm, tts, SimulatedSink(), AgentConfig(), recipes=store,
+                         preferences=prefs, on_text=lambda who, text: texts.append((who, text)))
+    if loaded:
+        agent.session.load_recipe(recipe)
+    return agent, llm, tts, texts
+
+
+async def test_instant_next_step_skips_llm(recipe, tmp_path):
+    agent, llm, tts, _ = offline_agent(recipe, tmp_path)
+    await agent.submit_text("next")
+    assert tts.spoken[-2:] == ["Step 1. Soak the rice for 20 minutes.",
+                               "Do you want me to start a timer for 20 minutes?"]
+    assert llm.calls == 0
+    assert agent.metrics.turns[-1]["tool_calls"] == ["next_step"]
+
+
+async def test_instant_timer(recipe, tmp_path):
+    agent, llm, tts, _ = offline_agent(recipe, tmp_path)
+    await agent.submit_text("set a rice timer for twelve minutes")
+    assert tts.spoken[-1] == "Okay, rice timer set for 12 minutes."
+    assert agent.timers.list()[0]["name"] == "rice" and llm.calls == 0
+    await agent.timers.aclose()
+
+
+async def test_unmatched_goes_to_llm(recipe):
+    agent, llm, _, _ = make_agent(recipe)
+    await agent.submit_text("what can I use instead of ghee")
+    assert len(llm.calls) == 1
+
+
+async def test_fresh_yes_is_instant(recipe, tmp_path):
+    agent, llm, tts, _ = offline_agent(recipe, tmp_path)
+    await agent.submit_text("next")
+    await agent.submit_text("yes")
+    assert tts.spoken[-2:] == ["Okay, timer started for 20 minutes.", READY_QUESTION]
+    assert agent.timers.list()[0]["name"] == "step 1" and llm.calls == 0
+    await agent.timers.aclose()
+
+
+async def test_not_yet_keeps_the_question_open(recipe, tmp_path):
+    agent, llm, tts, _ = offline_agent(recipe, tmp_path)
+    await agent.submit_text("next")
+    await agent.submit_text("no")          # no timer -> "ready for the next step?"
+    assert tts.spoken[-1] == READY_QUESTION
+    await agent.submit_text("not yet")
+    assert tts.spoken[-1] == "No problem, take your time."
+    await agent.submit_text("yes")         # still answers "ready for the next step?"
+    assert agent.session.step_index == 1 and llm.calls == 0
+
+
+async def test_stale_yes_goes_to_llm(recipe, tmp_path):
+    agent, llm, _, _ = offline_agent(recipe, tmp_path, exc=ConnectionError("down"))
+    await agent.submit_text("next")            # app asks about a timer
+    await agent.submit_text("what do I need")  # something else in between
+    await agent.submit_text("yes")             # no longer clearly an answer
+    assert llm.calls == 1 and agent.session.step_index == 0
+
+
+async def test_command_after_barge_in_is_instant(recipe):
+    agent, llm, _, _ = make_agent(recipe, realtime=True, speed=4)
+    agent.session.load_recipe(recipe)
+    agent.session.next_step()
+    agent.session.next_step()
+    first = agent.on_final("tell me something long")
+    await asyncio.sleep(0.15)
+    agent.barge_in()
+    await asyncio.gather(first, return_exceptions=True)
+    calls_before = len(llm.calls)
+    await agent.submit_text("go back")
+    assert agent.session.step_index == 0 and len(llm.calls) == calls_before
+
+
+async def test_llm_down_speaks_offline_message(recipe, tmp_path):
+    agent, llm, tts, texts = offline_agent(recipe, tmp_path, exc=ConnectionError("down"), loaded=False)
+    await agent.submit_text("what's a good dessert")
+    assert llm.calls == 1
+    assert tts.spoken[-1] == LLM_UNAVAILABLE
+    assert ("assistant", LLM_UNAVAILABLE) in texts
+
+
+async def test_offline_during_setup_mentions_setup_command(recipe, tmp_path):
+    agent, _, tts, _ = offline_agent(recipe, tmp_path, exc=ConnectionError("down"), setup=True, loaded=False)
+    agent.session.setup_pending = True
+    await agent.submit_text("none")
+    assert tts.spoken[-1] == f"{LLM_UNAVAILABLE} {SETUP_LATER}"
+
+
+async def test_history_after_instant_turn_is_text_only(recipe, tmp_path):
+    agent, _, _, _ = offline_agent(recipe, tmp_path)
+    await agent.submit_text("next")
+    user, reply = agent.history[-2:]
+    assert (user.role, user.text) == ("user", "next")
+    assert reply.role == "assistant" and reply.tool_calls == [] and reply.text.startswith("Step 1.")
+
+
+async def test_llm_tool_turn_history_shape(recipe):
+    agent, _, _, _ = make_agent(recipe)
+    await agent.submit_text("find a jeera rice recipe")
+    assert [m.role for m in agent.history] == ["user", "assistant", "tool", "assistant"]
+
+
+async def test_saved_recipe_offline_end_to_end(recipe, tmp_path):
+    agent, llm, tts, _ = offline_agent(recipe, tmp_path, setup=True, loaded=False)
+    announcer = asyncio.create_task(agent._announcer())
+    assert agent.begin_setup()
+    await asyncio.sleep(0.05)              # the setup question is spoken
+    await agent.submit_text("cook my dal")
+    assert agent.session.recipe is not None and "Found Mum's Dal" in tts.spoken[-1]
+    await agent.submit_text("next")
+    await agent.submit_text("yes")
+    await agent.submit_text("next")
+    announcer.cancel()
+    assert agent.session.step_index == 1 and llm.calls == 0
+    await agent.timers.aclose()
+
+
+async def test_instant_commands_can_be_disabled(recipe):
+    agent, llm, _, _ = make_agent(recipe, instant_commands=False)
+    agent.session.load_recipe(recipe)
+    await agent.submit_text("next")
+    assert len(llm.calls) == 1

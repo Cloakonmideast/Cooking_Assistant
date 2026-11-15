@@ -142,10 +142,15 @@ def test_dictation_only_timers(cooking):
     assert calls(m("set a pasta timer for 5 minutes", cooking)) == [("set_timer", {"name": "pasta", "minutes": 5})]
 
 
-def test_setup_open_only_timers(cooking):
+def test_setup_open_holds_back_possible_answers(cooking, store):
+    # Right after "any allergies? ... if not, just say none", these answer the question.
     assert m("no", cooking, awaiting=Awaiting.NEXT_STEP, setup_open=True) is None
+    assert m("yes", cooking, awaiting=Awaiting.NEXT_STEP, setup_open=True) is None
     assert m("next", cooking, setup_open=True) is None
+    assert m("that's all", cooking, setup_open=True) is None
+    # Clear commands still work.
     assert calls(m("set a pasta timer for 5 minutes", cooking, setup_open=True))[0][0] == "set_timer"
+    assert calls(m("cook my dal", CookingSession(), store, setup_open=True)) == [("get_recipe", {"dish": "dal"})]
 
 
 def test_stop_rules():
@@ -199,3 +204,7 @@ def test_no_template_ends_with_a_question():
 
 def test_step_results_left_to_agent():
     assert speak_result([ToolResult("next_step", {"step_number": 1, "instruction": "x"})]) is None
+
+
+def test_finished_recipe_message_is_spoken():
+    assert speak_result([ToolResult("next_step", {"finished": True, "message": "That was the last step."})]) ==         "That was the last step."

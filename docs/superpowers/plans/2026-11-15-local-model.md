@@ -17,7 +17,7 @@
 | 1. Ollama adapter and settings | done |
 | 2. Smoke test against a real Ollama (approval gate) | done |
 | 3. Instant command matcher | done |
-| 4. Wire matcher into agent + offline fallback | not started |
+| 4. Wire matcher into agent + offline fallback | done |
 | 5. Phase-specific tool lists | not started |
 | 6. Diet check in code (vegetarian, vegan, Jain) | not started |
 | 7. Choose the model by measuring (routing, speed, diet test) | not started |

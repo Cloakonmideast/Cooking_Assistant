@@ -20,7 +20,10 @@ async def test_fake_benchmark_routes_every_fixture_correctly():
     s = report["summary"]
     assert s["errors"] == 0
     assert s["tool_accuracy"] == 1.0
-    assert s["llm_first_token_ms"]["n"] == 10
+    # Instant commands (no LLM) answer some fixtures; the rest reach the LLM.
+    instant = sum(1 for t in report["turns"] if t.get("llm_rounds") == 0)
+    assert instant >= 1
+    assert s["llm_first_token_ms"]["n"] == 10 - instant
     assert s["first_audio_ms"]["n"] == 10
     # Without real-time pacing the end of speech is unknown, so e2e is not reported.
     assert s["e2e_first_audio_ms"]["n"] == 0

@@ -165,16 +165,19 @@ def match_command(text: str, session: CookingSession, store: Optional[RecipeStor
     timer = _timer_command(t, active_timers)
     if timer is not None:
         return timer
-    if setup_open or session.draft is not None:
-        return None  # "no", "next", "that's all" answer the open question or the dictation
-    if awaiting is not None:
+    if session.draft is not None:
+        return None  # while dictating, "next" and "that's all" belong to the recipe being dictated
+    # Right after the first-run question ("any allergies? ... if not, just say none"),
+    # yes/no/next/that's all are answers to it, not commands.
+    answers_held = setup_open
+    if awaiting is not None and not answers_held:
         if _YES.fullmatch(t):
             return _call("start_step_timer" if awaiting is Awaiting.TIMER else "next_step")
         if _NO.fullmatch(t):
             return CommandMatch([], reply=NO_REPLY)
     if session.recipe is not None:
         if _NEXT.fullmatch(t):
-            return _call("next_step")
+            return None if answers_held else _call("next_step")
         if _BACK.fullmatch(t):
             return _call("previous_step")
         if _REPEAT.fullmatch(t):
@@ -189,7 +192,7 @@ def match_command(text: str, session: CookingSession, store: Optional[RecipeStor
         dish = mt.group("dish").strip()
         if dish and not dish.startswith(("it ", "a ", "an ", "some ")) and store.find(dish) is not None:
             return _call("get_recipe", dish=dish)
-    if _END.fullmatch(t):
+    if _END.fullmatch(t) and not answers_held:
         return _call("end_session")
     return None
 
@@ -228,13 +231,15 @@ def _one(r: ToolResult) -> Optional[str]:
         return (f"Heads up: this recipe {'; '.join(warnings)}. " if warnings else "") + found
     if r.name == "end_session":
         return GOODBYE
+    if r.name in STEP_RESULT_TOOLS:
+        return res.get("message")  # "That was the last step."
     return None
 
 
 def speak_result(results: list[ToolResult]) -> Optional[str]:
-    """What to say after instant tool calls; None for step navigation, which
-    the agent reads out itself word for word."""
-    if any(r.name in STEP_RESULT_TOOLS and "error" not in r.result for r in results):
+    """What to say after instant tool calls; None for a step that was read
+    out, which the agent speaks itself word for word."""
+    if any(r.name in STEP_RESULT_TOOLS and "instruction" in r.result for r in results):
         return None
     parts = [p for p in (_one(r) for r in results) if p]
     return " ".join(parts) or None
