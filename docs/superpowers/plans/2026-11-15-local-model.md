@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.11, `ollama` (official Python client, talks to `http://localhost:11434`), pydantic, pytest.
 
-**Spec:** Agreed in conversation on 2026-11-15: "keep it simple and local"; local-model plan steps 1–4 and 7. Out of scope: website/phone app, containers, Piper voice, web recipe search, other languages.
+**Spec:** Agreed in conversation on 2026-11-15: "keep it simple and local"; local-model plan steps 1–4 and 7. Out of scope: website/phone app, containers, Piper voice, web recipe search, other languages. Recipe import from social media: **YouTube Shorts only for now** (Instagram set aside, decided 2026-11-16).
 
 ## Status
 
@@ -224,3 +224,7 @@ Task 1's tests use a fake client whose message shapes come from documentation; t
   - photo/PDF import goes to Gemini when its key is set, with a caught error otherwise;
   - first-run setup has defined behaviour offline;
   - recording instant turns as plain text is now a deliberate decision, and the existing test is updated.
+- **2026-11-16** — Scope: social-media import limited to YouTube Shorts. **Proposed, awaiting the user's yes:**
+  - a code check for diets (vegetarian/vegan/Jain) in `dietary.py`, because today only allergies and conditions are code-checked;
+  - an automatic diet test (about 10 profile × dish cases) in Task 6;
+  - no model training.
