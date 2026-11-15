@@ -5,6 +5,22 @@ says what was done, why, and how it was checked.
 
 ---
 
+## 2026-11-16 — Scope: YouTube Shorts only; diet rules found unchecked
+
+* Recipe import from social media: YouTube Shorts only for now (Instagram
+  often needs a login even for public accounts; set aside).
+* Checked how recipes follow dietary restrictions: the profile goes into the
+  recipe request as rules, the recipe must fit a strict format, and code
+  (`dietary.py`) checks every ingredient against **allergies and health
+  conditions**, with one rewrite and then a spoken warning. **Diets
+  (vegetarian, vegan, Jain) are not code-checked**: only the instruction to
+  the model enforces them, which is riskier with a small local model.
+* Proposed in the plan file, not yet approved: a code check for diets and an
+  automatic diet test when choosing the local model. No model training.
+* No code changed.
+
+---
+
 ## 2026-11-15 — Plan for a local AI model written down
 
 * Decided direction: **keep it simple and local** (no website/phone app,
