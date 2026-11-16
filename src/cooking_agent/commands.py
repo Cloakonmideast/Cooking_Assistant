@@ -150,9 +150,17 @@ def _call(tool: str, **args) -> CommandMatch:
 
 
 # Answers to "Kaju Curry is built around cashews ... I'd go with almonds. Shall I, or keep the cashews?"
-_KEEP = _p(r"(?:no\s+)?(?:just\s+)?(?:keep\b.*|leave (?:it|them) (?:in|as (?:it is|they are|is))|"
-           r"(?:it's|its|that's|thats) fine(?: as it is)?)")
-_LEAVE_OUT = _p(r"(?:yes\s+)?(?:leave|take) (?:it|them|the [a-z ]+) out(?: anyway)?")
+# (?P<what>...) must be "it", "them" or the asked-about ingredient (checked in _dish_choice).
+_ANSWER_START = r"(?:(?:no|nah|nope|yes|yeah|yep|ok|okay|sure)\s+)?(?:just\s+)?"
+_CLOSER = r"(?:\s+(?:then|please|today|this time|as (?:it is|they are|is)|that's fine|thats fine|it's fine|its fine))?"
+_KEEP = _p(_ANSWER_START + r"(?:keep(?: (?:the )?(?P<what>[a-z' ]+?))?(?: in)?|leave (?:the )?(?P<what2>[a-z' ]+?) "
+           r"(?:in|as (?:it is|they are|is))|(?:it's|its|that's|thats) fine(?: as it is)?)" + _CLOSER)
+_LEAVE_OUT = _p(_ANSWER_START + r"(?:(?:leave|take) (?:the )?(?P<what>[a-z' ]+?) out|leave out (?:the )?"
+                r"(?P<what2>[a-z' ]+?)|skip (?:the )?(?P<what3>[a-z' ]+?))(?: anyway)?" + _CLOSER)
+# Words that carry no choice: "let's use the almonds please", "I'd go with that".
+_CARRIER = {"use", "make", "go", "with", "let", "s", "do", "i", "ll", "d", "want", "have", "try", "instead",
+            "just", "then", "option", "today", "please", "ok", "okay", "yes", "yeah", "sure", "is", "fine",
+            "good", "we", "prefer", "rather", "go", "for", "can", "you", "one"}
 _YOUR_PICK = _p(r"(?:(?:yes|yeah|yep|sure|ok|okay) )?"
                 r"(?:(?:go with|do|make|use|let's do|lets do|let's go with|lets go with) )?"
                 r"(?:that|that 1|it|your pick|your choice|the 1 you'd pick|what you'd pick|"  # "one" is "1" here
@@ -163,25 +171,41 @@ _SECOND = _p(_CHOOSE + r"(?:the )?second(?: 1| option)?")
 _OTHER = _p(_CHOOSE + r"(?:the )?other(?: 1| option)?(?: instead)?")
 
 
-def _dish_choice(t: str, choice: dict, servings: Optional[int]) -> Optional[CommandMatch]:
-    """The cook's answer to the app's built-around question, or None for the LLM."""
-    x, use, dish, pick = choice["ingredient"], choice.get("use_instead"), choice.get("similar_dish"), choice["pick"]
+def _about(m: re.Match, mine: set[str]) -> bool:
+    """The answer is about the asked-about ingredient: "keep them", "keep the cashews",
+    not "keep it nut free" or "leave the onions out" (Fable, A3)."""
+    what = next((v for k, v in m.groupdict().items() if k.startswith("what") and v), None)
+    return what is None or what in ("it", "them") or (bool(ingredient_words(what))
+                                                       and set(ingredient_words(what)) <= mine)
+
+
+def _dish_choice(t: str, choice: dict, session: CookingSession, question: bool) -> Optional[CommandMatch]:
+    """The cook's answer to the app's built-around question, or None for the LLM.
+    ``question``: it sounds like one, so only the exact answers are matched."""
+    x, line = choice["ingredient"], choice.get("line") or choice["ingredient"]
+    use, dish, pick = choice.get("use_instead"), choice.get("similar_dish"), choice["pick"]
+    mine = set(ingredient_words(f"{x} {line}"))
 
     def do(kind: str) -> CommandMatch:
         if kind == "use_instead":
-            return CommandMatch([ToolCall("substitute_ingredient", {"ingredient": x, "replacement": use})],
+            # the same amount as what it replaces (the swap had dropped it: "butter, instead of ghee"; A6),
+            # as stored, i.e. for the recipe's own servings, which is what the tool takes
+            old = next((i for i in session.recipe.ingredients if i.name == line), None) if session.recipe else None
+            amount = {"quantity": old.quantity, "unit": old.unit} if old and old.quantity is not None else {}
+            return CommandMatch([ToolCall("substitute_ingredient", {"ingredient": line, "replacement": use} | amount)],
                                 reply=f"Okay, {use} instead of {x}.")
         if kind == "similar_dish":
-            args = {"dish": dish} | ({"servings": servings} if servings else {})
-            return CommandMatch([ToolCall("get_recipe", args)])
-        return CommandMatch([ToolCall("change_recipe", {"action": "remove_ingredient", "ingredient": x})],
+            servings = session.target_servings
+            return CommandMatch([ToolCall("get_recipe", {"dish": dish} | ({"servings": servings} if servings else {}))])
+        return CommandMatch([ToolCall("change_recipe", {"action": "remove_ingredient", "ingredient": line})],
                             reply=f"Okay, I've left out the {x}.")
 
-    if _KEEP.fullmatch(t) or _DECLINE.fullmatch(t):
-        return CommandMatch([], reply=f"Okay, keeping the {x}.")
-    if _LEAVE_OUT.fullmatch(t):
+    keep = CommandMatch([], reply=f"Okay, keeping the {x}.")
+    if (m := _KEEP.fullmatch(t)) and _about(m, mine) or _DECLINE.fullmatch(t):
+        return keep
+    if (m := _LEAVE_OUT.fullmatch(t)) and _about(m, mine):
         return do("leave_out")
-    if _YES.fullmatch(t) or _YOUR_PICK.fullmatch(t):
+    if _YES.fullmatch(t) or _YOUR_PICK.fullmatch(t) or t == "do":  # "please do" is "do" once normalised
         return do(pick)
     listed = [k for k, v in (("use_instead", use), ("similar_dish", dish)) if v]  # in the order they were said
     if listed and _FIRST.fullmatch(t):
@@ -190,10 +214,25 @@ def _dish_choice(t: str, choice: dict, servings: Optional[int]) -> Optional[Comm
         return do(listed[1])
     if len(listed) == 2 and _OTHER.fullmatch(t):
         return do(next(k for k in listed if k != pick))
-    said = set(ingredient_words(t))
-    named = [k for k in listed if said & set(ingredient_words(choice[k]))]
-    if len(named) == 1 and len(t.split()) <= 6:  # "almonds", "the paneer one", "make the paneer butter masala"
+    if question:
+        return None
+    # Naming one: every word left must be that option's, and at least one of them not shared with
+    # the dish in hand or the other option. "I'm allergic to almonds" and "not almonds" (A1), or
+    # "the curry" for a kaju curry vs a coconut curry (A2), go to the model.
+    content = set(ingredient_words(t)) - _CARRIER
+    if not content:
+        return None
+    name = set(ingredient_words(choice.get("name", "")))
+    words = {k: set(ingredient_words(choice[k])) for k in listed}
+    offered = set().union(*words.values())
+    named = [k for k in listed
+             if content <= words[k]
+             and content & (words[k] - name - set().union(*(w for j, w in words.items() if j != k)))]
+    if len(named) == 1:
         return do(named[0])
+    # "just the kaju curry", "cashews", "I want the cashews today": the dish in hand, by a word no option has
+    if not named and content <= name | mine and content & ((name | mine) - offered):
+        return keep
     return None
 
 
@@ -242,8 +281,9 @@ def match_command(text: str, session: CookingSession, store: Optional[RecipeStor
     # Right after the first-run question ("any allergies? ... if not, just say none"),
     # yes/no/next/that's all are answers to it, not commands.
     answers_held = setup_open
-    if awaiting is Awaiting.DISH_CHOICE and session.dish_choice and not answers_held and not is_question(text):
-        choice = _dish_choice(t, session.dish_choice, session.target_servings)
+    if awaiting is Awaiting.DISH_CHOICE and session.dish_choice and not answers_held:
+        # before the question check: "do it", "what you suggested" start like questions (Fable, A7)
+        choice = _dish_choice(t, session.dish_choice, session, question=is_question(text))
         if choice is not None:
             return choice
     if awaiting is not None and not answers_held:
@@ -314,7 +354,11 @@ def _one(r: ToolResult) -> Optional[str]:
         return f"Okay, for {res['servings']}: " + ". ".join(res["ingredients"]) + "."
     if r.name == "get_recipe":
         if res.get("source") == "your recipe book":
-            found = f"Found {res['title']} in your recipe book, for {res['servings']}. Say ready to start."
+            found = f"Found {res['title']} in your recipe book, for {res['servings']}."
+            if usual := res.get("your_usual_changes"):  # never said on this path before (Fable, A11)
+                found += f" You usually {'; '.join(usual)}; say if you'd like that."
+            if not res.get("built_around"):  # otherwise the app's question about it comes next
+                found += " Say ready to start."
         else:  # written just now, e.g. the similar dish the cook chose instead
             found = (f"Okay, here's {res['title']} for {res['servings']}: {res['ingredient_count']} ingredients "
                      f"and {res['step_count']} steps. Say ready to start.")

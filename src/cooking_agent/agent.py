@@ -659,7 +659,10 @@ class CookingAgent:
             return None
         tailored = [t.replace(" (", ", ").replace(")", "") for t in res.get("tailored_to", [])]
         made = f" Tailored to you: {'; '.join(tailored)}." if tailored else ""
-        return f"Here's {choice['name']} for {res['servings']}.{made}"
+        # a recipe-book recipe's usual changes, said rather than asked: the app's question comes next (A11)
+        usual = res.get("your_usual_changes") or []
+        offer = f" You usually {'; '.join(usual)}; say if you'd like that." if usual else ""
+        return f"Here's {choice['name']} for {res['servings']}.{made}{offer}"
 
     @staticmethod
     def _step_speech(results: list[ToolResult]) -> Optional[str]:

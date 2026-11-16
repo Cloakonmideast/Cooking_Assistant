@@ -24,7 +24,8 @@ from .recipe import Ingredient, Recipe, Step, format_minutes, ingredient_words, 
 from .dietary import DIETS, find_conflicts, requested_words
 from .preferences import (CATEGORIES, PreferenceStore, describe_for_recipe, diets_in, habit_key,
                           prefer_eggetarian, usual_changes)
-from .dishes import built_around, main_words, name_glossary
+from .dishes import built_around, dish_words, main_words, name_glossary, same_ingredient
+from .dietary import allergen_words
 from .recipe_store import RecipeStore
 from .state import Awaiting, CookingPhase, CookingSession, InvalidTransition, RecipeDraft
 from .timers import TimerError, TimerManager
@@ -39,6 +40,18 @@ OPTIONS_PROMPT = (
     "that doesn't need {ingredient}. Then pick the one you'd recommend. A few words each, no explanation.\n"
     "{profile}"
 )
+
+
+def _them(x: str) -> str:
+    """'cashews' -> 'them'; 'ghee', 'asparagus', 'hummus' -> 'it'."""
+    return "them" if x.endswith("s") and not x.endswith(("ss", "us")) else "it"
+
+
+# An exclusion in get_recipe's constraints ("no nuts", "without cashews").
+_EXCLUDES = re.compile(r"(?<![a-z])(?:no|without|minus|skip|leave out|leaves? out|free|exclude)(?![a-z])|"
+                       r"leaves_out|[a-z]-free")
+_EXCLUDE_WORDS = {"no", "without", "minus", "skip", "leave", "leaf", "out", "free", "exclude", "usually",
+                  "leaves_out"}
 
 
 class BetterOptions(BaseModel):
@@ -284,6 +297,11 @@ class ToolBox:
             if any(r.name == "get_recipe" for r in ok):
                 s.awaiting = Awaiting.DISH_CHOICE
                 return s.dish_choice["question"]
+            if not results and is_question(self.utterance):
+                # "what's coconut curry like?" isn't an answer: ask again, in short, so a "yes"
+                # is the app's (qwen3's own "want to try it?" + "yes" removed the cashews; Fable, B2)
+                s.awaiting = Awaiting.DISH_CHOICE
+                return s.dish_choice["again"]
             s.dish_choice = None  # answered, or the cook moved on to something else
             if s.awaiting is Awaiting.DISH_CHOICE:
                 s.awaiting = None
@@ -388,8 +406,34 @@ class ToolBox:
 
         return handler
 
+    def _without_invented_exclusions(self, a: GetRecipeArgs) -> GetRecipeArgs:
+        """Drop "no nuts" from the constraints for "let's make kaju katli" when the
+        cook said nothing of the kind and only their habit is to leave cashews out:
+        qwen3 added it itself, which gave a cashew-free katli of oats and skipped
+        the cook's own recipe in the book (Fable, B1). A real allergy is still in
+        the profile, so it's still checked."""
+        said = (self.utterance or "").lower()
+        if not a.constraints or not said or _EXCLUDES.search(said):
+            return a
+        usual = usual_changes(self._profile())
+        targets = set().union(*(main_words(x) for x in usual["leaves_out"] + [s["from"] for s in usual["swaps"]]
+                                if built_around(a.dish, x)))
+        if not targets:
+            return a
+        kept = []
+        for clause in re.split(r"[,;]|(?<![a-z])and(?![a-z])", a.constraints):
+            words = set(ingredient_words(clause)) - _EXCLUDE_WORDS
+            family = {w for word in words for name in allergen_words(word) for w in ingredient_words(name)}
+            if _EXCLUDES.search(clause.lower()) and (words | family) & targets:
+                log.info("dropped %r from get_recipe constraints: the cook didn't ask for it", clause.strip())
+                continue
+            if clause.strip():
+                kept.append(clause.strip())
+        return a.model_copy(update={"constraints": ", ".join(kept) or None})
+
     async def _get_recipe(self, a: GetRecipeArgs) -> dict:
-        request_id = self.prefs.record_request(a.dish, a.constraints, a.servings) if self.prefs else None
+        a = self._without_invented_exclusions(a)
+        request_id =self.prefs.record_request(a.dish, a.constraints, a.servings) if self.prefs else None
         servings, servings_learned = a.servings, False
         if servings is None and self.prefs and (usual := self.prefs.default_servings()):
             servings, servings_learned = usual, True
@@ -518,24 +562,37 @@ class ToolBox:
         told to and didn't (qwen3 said "I kept the cashews" with no options in
         3 of 3, then acted on the answer wrongly)."""
         r = self.session.recipe
-        kept = [n for n in around
-                if any(main_words(n["ingredient"]) <= set(ingredient_words(i.name)) for i in r.ingredients)]
+        kept = []
+        for n in around:
+            # the same ingredient only: "cashew nuts" for cashews, not "peanut butter" for butter (Fable, A5)
+            line = next((i.name for i in r.ingredients if same_ingredient(i.name, n["ingredient"])), None)
+            if line is not None:
+                kept.append(n | {"line": line})
         if kept:
-            self.session.dish_choice = await self._dish_choice(kept[0], profile)
-        return [n | {"note": "kept on purpose; the app asked the cook whether to change it"} for n in kept]
+            self.session.dish_choice = await self._dish_choice(kept[0], profile, also=kept[1:])
+        notes = ["kept on purpose; the app asked the cook whether to change it"] + ["kept on purpose"] * len(kept)
+        return [{k: v for k, v in n.items() if k != "line"} | {"note": note} for n, note in zip(kept, notes)]
 
-    async def _dish_choice(self, note: dict, profile: dict) -> dict:
+    async def _dish_choice(self, note: dict, profile: dict, also: list[dict]) -> dict:
         # "Kaju Curry (Cashew Curry) - 2 Servings", as qwen3 titled it, is said as "Kaju Curry"
-        name = re.sub(r"\s*\([^)]*\)|\s*[-–:]\s*(?:for\s+)?\d+\s+servings?\b.*$", "", self.session.recipe.title,
-                      flags=re.IGNORECASE).strip() or self.session.recipe.title
+        name = re.sub(r"\s*\([^)]*\)|\s*(?:[-–:]\s*)?(?:for|serves)\s+\d+\b.*$|\s*[-–:]\s*\d+\s+servings?\b.*$",
+                      "", self.session.recipe.title, flags=re.IGNORECASE).strip() or self.session.recipe.title
+        book = self.session.recipe_source == "recipe book"
         x = note["ingredient"]
-        them = "them" if x.endswith("s") else "it"
+        them = _them(x)
+        others = " ".join(f"I also kept the {n['ingredient']} in, though you usually "
+                          + (f"use {n['usual_swap']} instead." if "usual_swap" in n
+                             else f"leave {_them(n['ingredient'])} out.") for n in also)
+        usual = f"use {note['usual_swap']} instead" if "usual_swap" in note else f"leave {them} out"
+        kept = (f"{name} is built around {x}, and you usually {usual}." if book  # their own recipe: nothing was kept
+                else f"{name} is built around {x}, so I kept {them} in, though you usually {usual}.")
+        kept = f"{kept} {others}".strip()
+        base = {"name": name, "ingredient": x, "line": note["line"]}
         if "usual_swap" in note:  # the usual swap is the option
             to = note["usual_swap"]
-            return {"name": name, "ingredient": x, "use_instead": to, "similar_dish": None, "pick": "use_instead",
-                    "question": f"{name} is built around {x}, so I kept {them} in, though you usually use "
-                                f"{to} instead. Shall I use {to} anyway, or keep the {x}?"}
-        kept = f"{name} is built around {x}, so I kept {them} in, though you usually leave {them} out."
+            return base | {"use_instead": to, "similar_dish": None, "pick": "use_instead",
+                           "question": f"{kept} Shall I use {to} anyway, or keep the {x}?",
+                           "again": f"So, shall I use {to} instead, or keep the {x}?"}
         use, dish, pick = await self._better_options(x, name, profile)
         if use and dish:
             mine = f"I'd go with {use}." if pick == "use_instead" else f"I'd make {dish} instead."
@@ -546,8 +603,11 @@ class ToolBox:
             offer = f"I'd make {dish} instead. Shall I, or keep the {x}?"
         else:
             offer = f"Shall I leave {them} out anyway, or keep {them}?"
-        return {"name": name, "ingredient": x, "use_instead": use, "similar_dish": dish, "pick": pick,
-                "question": f"{kept} {offer}"}
+        again = {"use_instead": f"So, shall I use {use} instead, or keep the {x}?",
+                 "similar_dish": f"So, shall I make {dish} instead, or keep the {x}?",
+                 "leave_out": f"So, shall I leave {them} out, or keep {them}?"}[pick]
+        return base | {"use_instead": use, "similar_dish": dish, "pick": pick, "question": f"{kept} {offer}",
+                       "again": again}
 
     async def _better_options(self, x: str, title: str, profile: dict
                               ) -> tuple[Optional[str], Optional[str], str]:
@@ -562,9 +622,14 @@ class ToolBox:
         use, dish = o.use_instead.strip().lower() or None, o.similar_dish.strip().lower() or None
         has = lambda name: any(main_words(name) <= set(ingredient_words(i.name))  # noqa: E731
                                for i in self.session.recipe.ingredients)
-        if use and (self._conflicts([use]) or main_words(x) <= set(ingredient_words(use)) or has(use)):
+        # what the cook doesn't like or usually leaves out isn't an option either (Fable, A12)
+        usual = usual_changes(profile)
+        avoid = [x, *profile.get("dislike", []), *usual["leaves_out"], *(s["from"] for s in usual["swaps"])]
+        unwanted = lambda text: any(main_words(a) <= set(ingredient_words(text)) for a in avoid)  # noqa: E731
+        if use and (self._conflicts([use]) or unwanted(use) or has(use)):
             use = None  # can't have it, the same thing again, or already in the recipe (two coconut milk lines)
-        if dish and (self._conflicts([dish]) or built_around(dish, x)):
+        if dish and (self._conflicts([dish]) or built_around(dish, x)
+                     or any(built_around(dish, a) for a in avoid[1:])):
             dish = None
         options = {"use_instead": use, "similar_dish": dish}
         pick = o.pick if options[o.pick] else next((k for k, v in options.items() if v), "leave_out")
@@ -581,6 +646,11 @@ class ToolBox:
                 + [f"use less {x}" for x in usual["less"] if has(x)])
 
     def _record(self, kind: str, original: str, replacement: Optional[str] = None) -> None:
+        choice = self.session.dish_choice
+        if choice is not None and original == choice["line"]:
+            # taking the app's own suggestion isn't the cook's habit: two "yes"es had taught
+            # "swap cashews for almonds", and the next pulao got almonds (Fable, A4)
+            return
         if self.prefs is not None:
             self.prefs.record_adjustment(kind, original, replacement, load_id=self._request_id)
 
