@@ -257,13 +257,17 @@ def parse_ingredient_line(line: str) -> Ingredient:
 # Words that don't name an ingredient ("some of the peas").
 _FILLER_WORDS = {"the", "a", "an", "some", "of", "any", "my", "this", "that", "few", "bit", "little", "and", "or"}
 # Spellings of the same thing, after plurals are removed.
-_SAME_WORD = {"chilly": "chilli", "chili": "chilli", "chile": "chilli", "chily": "chilli", "leave": "leaf",
-              "loave": "loaf", "halve": "half", "yoghurt": "yogurt", "coriandre": "coriander"}
+_SAME_WORD = {"chilly": "chilli", "chili": "chilli", "chile": "chilli", "chily": "chilli",
+              "yoghurt": "yogurt", "coriandre": "coriander"}
+# -ves plurals, mapped whole so the verb "leave" ("leave to rest") isn't the noun "leaf"
+_VES_PLURALS = {"leaves": "leaf", "loaves": "loaf", "halves": "half"}
 
 
 def stem_word(w: str) -> str:
     """'chillies' -> 'chilli', 'leaves' -> 'leaf', 'tomatoes' -> 'tomato', 'onions' -> 'onion'."""
     w = w.lower()
+    if w in _VES_PLURALS:
+        return _VES_PLURALS[w]
     if w.endswith("ies") and len(w) > 4:
         w = w[:-3] + "y"
     elif w.endswith(("ches", "shes", "xes", "oes")):

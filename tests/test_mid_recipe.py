@@ -363,3 +363,10 @@ def test_prompt_no_longer_asks_the_model_to_rewrite_steps():
     from cooking_agent.agent import SYSTEM_PROMPT
 
     assert "steps_to_update" not in SYSTEM_PROMPT
+
+
+def test_the_verb_leave_is_not_the_leaves_ingredient():
+    s = _session("coriander leaves", "rice", steps=("Garnish with coriander.", "Leave to rest for 5 minutes."))
+    s.remove_ingredient("coriander leaves")
+    assert s.step_text(1) == "Leave to rest for 5 minutes."
+    assert s.step_text(0).endswith("Leave out the coriander leaves.")

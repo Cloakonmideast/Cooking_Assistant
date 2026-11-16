@@ -102,6 +102,9 @@ _EGGS_NEGATED = re.compile(r"(?:n't|(?<![a-z])(?:not|never|no|avoid|avoiding|sto
 _EGGS_NEGATED_AFTER = re.compile(r"^[^.;!?]*?(?:but|though|although)\s+(?:i|we)\s+(?:don't|do not|never|won't|"
                                  r"can't|cannot|dont)(?![a-z])")
 _CLAUSE_START = re.compile(r"[,.;:!?]|(?<![a-z])(?:but|though|although)(?![a-z])")
+# "I eat eggs and fish": not an eggetarian (fish would be flagged)
+_EATS_FISH = re.compile(r"(?<![a-z])(?:eat|eats|eating|have|has)\s+(?:\w+\s+){0,3}?(?:fish|seafood|prawns?|shrimps?)"
+                        r"(?![a-z])")
 _NO_MEAT = re.compile(r"(?<![a-z])(?:no|not|without|don't eat|do not eat|never eat)\s+(?:any\s+)?meat(?![a-z])")
 
 
@@ -148,7 +151,8 @@ def stated_diets(text: Optional[str]) -> set[str]:
 def diets_in(text: Optional[str]) -> set[str]:
     t = f" {_norm(text or '')} "
     found = _diet_words_in(t)
-    if _eats_eggs(t) and (found & {"vegetarian", "eggetarian"} or _NO_MEAT.search(t)):
+    eats_fish = "pescatarian" in found or _EATS_FISH.search(t)
+    if _eats_eggs(t) and not eats_fish and (found & {"vegetarian", "eggetarian"} or _NO_MEAT.search(t)):
         found.add("eggetarian")
     return prefer_eggetarian(found)
 

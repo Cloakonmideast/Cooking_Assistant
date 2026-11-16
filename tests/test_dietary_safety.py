@@ -332,3 +332,8 @@ def test_eggs_negated_in_the_clause_stays_vegetarian(said):
                                   "vegetarian plus eggs", "we're eggetarians", "veg and eggs are fine"])
 def test_more_ways_to_say_eggetarian(said):
     assert diets_in(said) == {"eggetarian"}
+
+
+@pytest.mark.parametrize("said", ["pescatarian, I eat eggs and fish but no meat", "I eat eggs and fish, no meat"])
+def test_someone_who_eats_fish_is_not_made_eggetarian(said):
+    assert "eggetarian" not in diets_in(said)
