@@ -36,8 +36,8 @@ CATEGORIES = ("allergy", "condition", "diet", "dislike", "like", "pantry", "othe
 
 # Constraint words that describe a diet, for spotting a habit in requests.
 DIET_WORDS = {
-    "eggetarian": "eggetarian", "eggitarian": "eggetarian", "ovo vegetarian": "eggetarian",
-    "ovo-vegetarian": "eggetarian",
+    "eggetarian": "eggetarian", "eggitarian": "eggetarian", "eggetarians": "eggetarian",
+    "eggitarians": "eggetarian", "ovo vegetarian": "eggetarian", "ovo-vegetarian": "eggetarian",
     "vegetarian": "vegetarian", "veg": "vegetarian", "veggie": "vegetarian", "vegan": "vegan",
     "eggless": "eggless", "jain": "jain", "gluten-free": "gluten-free", "gluten free": "gluten-free",
     "dairy-free": "dairy-free", "dairy free": "dairy-free", "low-carb": "low-carb", "low carb": "low-carb",
@@ -78,13 +78,29 @@ _VEG_AS_VEGETABLES = re.compile(r"(?<![a-z])(?:of|more|less|some|any|the|with|ex
 
 # "vegetarian but I eat eggs", "eggs are fine", "I eat eggs but no meat": a vegetarian who eats eggs.
 _EATS_EGGS = re.compile(r"(?<![a-z])(?:(?:eat|eats|have|has|take|takes|having|eating)\s+eggs?"
-                        r"|eggs?\s+(?:are|is)\s+(?:fine|ok|okay|allowed|alright))(?![a-z])")
-_EGGS_NEGATED = re.compile(r"(?:n't|not|never|no)\s+(?:\w+\s+)?$")
+                        r"|eggs?\s+(?:are|is)\s+(?:fine|ok|okay|allowed|alright)"
+                        r"|(?:vegetarian|veg|veggie)\s+(?:with|plus|and|\+|except(?:\s+for)?)\s+eggs?"
+                        r"|eggs?\s+vegetarian)(?![a-z])")
+# Anything in the same clause that says the cook doesn't eat them ("I don't like to eat eggs",
+# "I've stopped eating eggs") or that it's someone else ("my husband eats eggs").
+_EGGS_NEGATED = re.compile(r"(?:n't|(?<![a-z])(?:not|never|no|avoid|avoiding|stopped|stop|quit|gave up|give up|"
+                           r"without|cannot|my|his|her|he|she|they|their|husband|wife|partner|kids|son|daughter|"
+                           r"family|friend|guest)(?![a-z]))")
+_EGGS_NEGATED_AFTER = re.compile(r"^[^.;!?]*?(?:but|though|although)\s+(?:i|we)\s+(?:don't|do not|never|won't|"
+                                 r"can't|cannot|dont)(?![a-z])")
+_CLAUSE_START = re.compile(r"[,.;:!?]|(?<![a-z])(?:but|though|although)(?![a-z])")
 _NO_MEAT = re.compile(r"(?<![a-z])(?:no|not|without|don't eat|do not eat|never eat)\s+(?:any\s+)?meat(?![a-z])")
 
 
 def _eats_eggs(t: str) -> bool:
-    return any(not _EGGS_NEGATED.search(t[: m.start()]) for m in _EATS_EGGS.finditer(t))
+    for m in _EATS_EGGS.finditer(t):
+        before = t[: m.start()]
+        starts = [c.end() for c in _CLAUSE_START.finditer(before)]
+        clause = before[starts[-1]:] if starts else before
+        if _EGGS_NEGATED.search(clause) or _EGGS_NEGATED_AFTER.search(t[m.end():]):
+            continue  # when in doubt, plain vegetarian (eggs get checked)
+        return True
+    return False
 
 
 def diets_in(text: Optional[str]) -> set[str]:

@@ -317,3 +317,18 @@ async def test_eggless_request_checks_eggs_for_an_eggetarian(tmp_path):
     llm = SequenceLLM([dish("eggs", "flour"), dish("flax seeds", "flour")])
     await call(diet_box(tmp_path, llm, diet="eggetarian"), "get_recipe", dish="eggless sponge cake")
     assert len(llm.prompts) == 2 and "eggs (conflicts with eggless diet)" in llm.prompts[1]
+
+
+# ------------------------------------------------------------ review fix I8: eggs negated anywhere in the clause
+@pytest.mark.parametrize("said", [
+    "vegetarian, I don't like to eat eggs", "vegetarian, I've stopped eating eggs", "vegetarian and I avoid eating eggs",
+    "vegetarian, my husband eats eggs but I don't", "vegetarian, I can't eat eggs", "vegetarian, I gave up eating eggs",
+])
+def test_eggs_negated_in_the_clause_stays_vegetarian(said):
+    assert diets_in(said) == {"vegetarian"}
+
+
+@pytest.mark.parametrize("said", ["vegetarian with eggs", "egg vegetarian", "vegetarian except eggs",
+                                  "vegetarian plus eggs", "we're eggetarians", "veg and eggs are fine"])
+def test_more_ways_to_say_eggetarian(said):
+    assert diets_in(said) == {"eggetarian"}
