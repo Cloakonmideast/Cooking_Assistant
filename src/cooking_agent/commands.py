@@ -97,9 +97,12 @@ def _p(pattern: str) -> re.Pattern:
     return re.compile(pattern)
 
 
-# Ends with "what's next" / "what now": the cook is done with the step.
-_WHATS_NEXT = re.compile(r"(?:^|\s)(?:what's next|whats next|what is next|what now|what do i do next|"
-                         r"what do i do now|what's the next step|whats the next step)$")
+# Ends with "what's next": the cook is done with the step. "What now" only alone or after a done
+# word: "I burnt the onions, what now" is a problem, not a step forward.
+_WHATS_NEXT = re.compile(r"(?:^|\s)(?:what's next|whats next|what is next|what do i do next|"
+                         r"what's the next step|whats the next step)$"
+                         r"|^(?:(?:ok|okay|right|alright|done|finished|all done|that's done|that's it|i'm done|"
+                         r"im done|ready)\s+)*what (?:do i do )?now$")
 
 
 _YES = _p(r"(?:(?:yes|yeah|yea|yep|yup|sure|ok|okay|alright|of course|go ahead|do it|please do|"

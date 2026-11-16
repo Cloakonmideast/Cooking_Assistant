@@ -136,6 +136,10 @@ _ONE_OFF = re.compile(r"(?<![a-z])(?:today|tonight|this time|for now|this week|t
                       r"on weekends|sometimes|for lent)(?![a-z])")
 
 
+_HYPOTHETICAL = re.compile(r"(?<![a-z])(?:if|whether|suppose|supposing|pretend|imagine|say)\s+(?:\w+\s+)?"
+                           r"(?:i'?m|i am|we'?re|we are|i|we)(?![a-z'])")
+
+
 def stated_diets(text: Optional[str]) -> set[str]:
     """Diets the cook says they follow ("I'm vegetarian but I eat eggs" ->
     {"eggetarian"}); empty for requests, other people, negations and one-offs.
@@ -143,6 +147,8 @@ def stated_diets(text: Optional[str]) -> set[str]:
     saving (Phase 2 review)."""
     t = _norm(text or "")
     if not (_STATED_DIET.search(t) or _EATS_EGGS_NO_MEAT.search(t)) or _ONE_OFF.search(t):
+        return set()
+    if _HYPOTHETICAL.search(t):  # "what if I'm vegan", "if I'm vegetarian, can I eat this"
         return set()
     sentence = re.split(r"[.!?]", t[(_STATED_DIET.search(t) or _EATS_EGGS_NO_MEAT.search(t)).start():] + ".")[0]
     return diets_in(sentence) & DIET_FAMILY

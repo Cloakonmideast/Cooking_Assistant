@@ -75,3 +75,9 @@ def test_statement_after_a_filler_word(said, diets):
 @pytest.mark.parametrize("said", ["I think I'm making a vegetarian biryani", "honestly I'm not vegan"])
 def test_filler_word_does_not_widen_to_requests(said):
     assert stated_diets(said) == set()
+
+
+@pytest.mark.parametrize("said", ["what if I'm vegan", "if I'm vegetarian, can I eat this",
+                                  "suppose we're vegan, what then", "say I'm jain, is this okay"])
+def test_hypotheticals_are_not_saved(said):
+    assert stated_diets(said) == set()

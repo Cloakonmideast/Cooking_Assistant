@@ -215,3 +215,17 @@ def test_finished_recipe_message_is_spoken():
 def test_whats_next_moves_on_while_cooking(cooking, said):
     cooking.next_step()
     assert calls(m(said, cooking)) == [("next_step", {})]
+
+
+@pytest.mark.parametrize("said", ["I burnt the onions, what now", "it's too salty, what do I do now",
+                                  "the oil is smoking, what now?"])
+def test_a_problem_then_what_now_is_not_next_step(cooking, said):
+    cooking.next_step()
+    out = m(said, cooking)
+    assert out is None or ("next_step", {}) not in calls(out)
+
+
+@pytest.mark.parametrize("said", ["what now", "okay done, what now?", "finished, what now"])
+def test_done_then_what_now_is_next_step(cooking, said):
+    cooking.next_step()
+    assert calls(m(said, cooking)) == [("next_step", {})]

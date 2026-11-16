@@ -294,3 +294,23 @@ def test_latest_wins_even_within_the_same_clock_tick(prefs, monkeypatch):
     for load in (3, 4):
         prefs.record_adjustment("less", "garlic", load_id=load)
     assert prefs.learned()["usually_less"] == ["garlic"] and "usually_more" not in prefs.learned()
+
+
+@pytest.mark.parametrize("habit,ingredient", [("coconut milk", "milk"), ("rice flour", "basmati rice"),
+                                              ("butter", "peanut butter")])
+async def test_a_habit_is_applied_only_to_the_same_ingredient(tmp_path, prefs, recipe, habit, ingredient):
+    dish = recipe.model_copy(update={"ingredients": [*recipe.ingredients,
+                                                     recipe.ingredients[2].model_copy(update={"name": ingredient})]})
+    _habits(prefs, ("remove", habit))
+    tb = make_box(tmp_path, prefs, dish)
+    await call(tb, "get_recipe", dish="pulao")
+    assert ingredient in [i.name for i in tb.session.recipe.ingredients]
+
+
+async def test_a_habit_still_applies_to_a_plural_or_described_name(tmp_path, prefs, recipe):
+    dish = recipe.model_copy(update={"ingredients": [*recipe.ingredients,
+                                                     recipe.ingredients[2].model_copy(update={"name": "red onions"})]})
+    _habits(prefs, ("remove", "onion"))
+    tb = make_box(tmp_path, prefs, dish)
+    await call(tb, "get_recipe", dish="pulao")
+    assert "red onions" not in [i.name for i in tb.session.recipe.ingredients]

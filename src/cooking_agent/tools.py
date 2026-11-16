@@ -21,8 +21,8 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 from .providers.base import LLMProvider, ToolCall, ToolResult, ToolSpec
 from .recipe import Ingredient, Recipe, Step, format_minutes, ingredient_words, parse_ingredient_line
 from .dietary import DIETS, find_conflicts, requested_words
-from .preferences import (CATEGORIES, PreferenceStore, describe_for_recipe, diets_in, prefer_eggetarian,
-                          usual_changes)
+from .preferences import (CATEGORIES, PreferenceStore, describe_for_recipe, diets_in, habit_key,
+                          prefer_eggetarian, usual_changes)
 from .recipe_store import RecipeStore
 from .state import Awaiting, CookingPhase, CookingSession, InvalidTransition, RecipeDraft
 from .timers import TimerError, TimerManager
@@ -508,9 +508,13 @@ class ToolBox:
         done: list[str] = []
 
         def target(name: str) -> Optional[int]:
+            # the same ingredient only ("onion" -> "red onions"), never a near one
+            # ("coconut milk" habit -> "milk", "butter" -> "peanut butter")
             if set(ingredient_words(name)) & named:
                 return None
-            return s.find_ingredient_words(name)
+            key = habit_key(name)
+            same = [i for i, ing in enumerate(s.recipe.ingredients) if habit_key(ing.name) == key]
+            return same[0] if len(same) == 1 else None
 
         def attempt(action: Callable[[], None], note: str) -> None:
             try:
