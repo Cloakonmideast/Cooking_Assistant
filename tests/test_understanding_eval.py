@@ -119,3 +119,10 @@ def test_new_cases_cover_the_review_findings():
 def test_prompt_examples_are_not_the_eval_topics():
     p = SYSTEM_PROMPT.lower()
     assert "brown rice" not in p and "soak" not in p and "chillies" not in p
+
+
+async def test_a_refused_change_is_not_a_change():
+    """The app's guard turns "could I leave out X" into an answer; that's right, not wrong."""
+    could = Case("could I leave out the cumin", "question", (ANSWER,))
+    llm = ScriptedLLM(script={"": [ToolCall("change_recipe", {"action": "remove_ingredient", "ingredient": "cumin"})]})
+    assert (await run_understanding_eval(llm, [could], runs=1, progress=quiet))["summary"]["accuracy"] == 1.0

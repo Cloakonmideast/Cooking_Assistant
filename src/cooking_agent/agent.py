@@ -86,13 +86,13 @@ During a recipe:
 [current step] marked. Never read a step out of it yourself: steps are only \
 read by calling next_step, previous_step or repeat_step, so the app knows \
 where the cook is. Answer questions about the dish ("is the oil hot \
-enough?", "why rest the dough?", "can I use honey instead of sugar?") from it \
+enough?", "why rest the dough?", "how thick should the sauce be?") from it \
 in one or two sentences, calling no tool, and stay on the same step.
 - When the cook asks to change the recipe (leave something out, add \
 something, more or less of something, do a step differently), call \
 change_recipe; to swap one ingredient for another, call \
-substitute_ingredient. "Make it less spicy" means change_amount less on \
-the hot ingredient. Only change it when they ask for a change, not when \
+substitute_ingredient. "Make it less spicy" means change_recipe with \
+action "change_amount" and amount "less" on the hot ingredient. Only change it when they ask for a change, not when \
 they ask whether they could.
 - The app itself tells the cook to leave out a removed ingredient, or use \
 the substitute, whenever a step mentions it, so don't rewrite steps for \
@@ -168,6 +168,7 @@ INTERRUPTED_NOTE = "[The user interrupted your previous reply while it was being
 LLM_UNAVAILABLE = ("I can't reach the AI model right now. I can still go to the next step, repeat it, "
                    "set timers, and cook recipes from your recipe book.")
 SETUP_LATER = "You can finish setup later by typing cooking-agent setup."
+NOT_CAUGHT = "Sorry, I didn't catch that. Could you say it another way?"
 MAX_TOOL_ROUNDS = 4
 QUESTION_FRESH_S = 60.0  # a bare "yes" answers the app's question only this soon after it was heard
 MAX_HISTORY_MESSAGES = 40
@@ -569,6 +570,7 @@ class CookingAgent:
                           m: TurnMetrics) -> None:
         """Stream model rounds, run tool calls, and append the turn to ``committed``."""
         all_results: list[ToolResult] = []
+        retried_empty = False
         for _ in range(MAX_TOOL_ROUNDS):
             m.llm_rounds += 1
             self._last_llm_use = self.timers.now()
@@ -593,6 +595,17 @@ class CookingAgent:
                 raise RuntimeError("LLM stream ended without TurnComplete")
             if reply.text:
                 self.on_text("assistant", reply.text)
+            if not calls and not reply.text.strip() and not all_results:
+                # Nothing at all: Ollama drops a call to a tool that doesn't exist (qwen3 tried
+                # "change_amount"), which left the cook in silence. Ask once more, then say so.
+                if not retried_empty:
+                    retried_empty = True
+                    log.warning("empty reply from the model; asking again")
+                    continue
+                emit(NOT_CAUGHT)
+                self.on_text("assistant", NOT_CAUGHT)
+                committed.append(Message("assistant", NOT_CAUGHT))
+                break
             if not calls:
                 committed.append(reply)
                 break

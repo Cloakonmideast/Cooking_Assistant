@@ -100,3 +100,43 @@ async def test_a_statement_still_moves_past_the_timer_offer(recipe):
     await agent.submit_text("next")
     await agent.submit_text("I'll keep an eye on it myself")
     assert agent.tts.spoken[-1] == "Are you ready for the next step?"
+
+
+# ------------------------------------------------------------ found re-running the eval on qwen3
+def test_prompt_names_actions_only_as_change_recipe_actions():
+    """qwen3 called a tool named "change_amount" (the prompt's wording); Ollama drops a
+    call to a tool that doesn't exist, and the cook heard nothing."""
+    import re
+
+    from cooking_agent.agent import SYSTEM_PROMPT
+    for m in re.finditer(r"change_amount|remove_ingredient|add_ingredient|change_step", SYSTEM_PROMPT):
+        assert SYSTEM_PROMPT[max(0, m.start() - 40):m.start()].count("change_recipe"), SYSTEM_PROMPT[m.start() - 60:m.end()]
+    assert "instead of sugar" not in SYSTEM_PROMPT  # a swap question as an answer-only example
+
+
+class SilentThenTalking(ScriptedLLM):
+    rounds: int = 0
+
+    async def stream(self, system, history, tools):
+        self.rounds += 1
+        if self.rounds == 1:
+            from cooking_agent.providers.base import Message, TurnComplete
+            yield TurnComplete(Message("assistant", ""))
+            return
+        async for ev in super().stream(system, history, tools):
+            yield ev
+
+
+async def test_an_empty_model_reply_is_retried_once(recipe):
+    llm = SilentThenTalking(recipe=recipe, script={"": ["Sure, here you go."]})
+    from cooking_agent.providers.fake import QueueSTT as Q
+    agent = CookingAgent(Q(), llm, ToneTTS(), SimulatedSink(), AgentConfig())
+    await agent.submit_text("tell me something")
+    assert llm.rounds == 2 and agent.tts.spoken[-1] == "Sure, here you go."
+
+
+async def test_a_model_that_stays_silent_still_gets_a_reply(recipe):
+    llm = ScriptedLLM(recipe=recipe, script={"": [""]})
+    agent = CookingAgent(QueueSTT(), llm, ToneTTS(), SimulatedSink(), AgentConfig())
+    await agent.submit_text("tell me something")
+    assert agent.tts.spoken[-1] == "Sorry, I didn't catch that. Could you say it another way?"

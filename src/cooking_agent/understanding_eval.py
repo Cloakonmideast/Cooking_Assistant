@@ -25,7 +25,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-from .agent import LLM_UNAVAILABLE, AgentConfig, CookingAgent
+from .agent import LLM_UNAVAILABLE, NOT_CAUGHT, AgentConfig, CookingAgent
 from .audio import SimulatedSink
 from .preferences import PreferenceStore
 from .providers.base import ToolCall
@@ -177,7 +177,7 @@ UNDERSTANDING_CASES: list[Case] = [
           Expect("change_recipe", {"action": "remove_ingredient"}, _gone("chilli"))), PASTA),
     Case("okay the garlic smells great now", "command", (Expect("next_step"),), PASTA),
 ]
-_NOT_AN_ANSWER = (LLM_UNAVAILABLE, "Sorry, something went wrong")
+_NOT_AN_ANSWER = (LLM_UNAVAILABLE, NOT_CAUGHT, "Sorry, something went wrong")
 
 
 async def _fresh_agent(llm, recipe: Recipe = RECIPE) -> CookingAgent:
@@ -210,11 +210,13 @@ def _args_match(want: dict, got: dict) -> bool:
 
 
 def judge(case: Case, calls: list[ToolCall], before: dict, session: CookingSession, step_before: int,
-          succeeded: Optional[list[ToolCall]] = None, reply: Optional[str] = None) -> bool:
+          succeeded: Optional[list[ToolCall]] = None, reply: Optional[str] = None,
+          refused: Optional[list[ToolCall]] = None) -> bool:
     """True if what happened is one of the case's accepted outcomes. A tool
     only counts if it ran without an error (``succeeded``); an answer needs
     something said that isn't an error message (``reply``)."""
-    changing = [c for c in calls if c.name not in READ_ONLY]
+    # a change the app refused ("could I...?" only asks) changed nothing
+    changing = [c for c in calls if c.name not in READ_ONLY and not any(c is r for r in refused or [])]
     ok_calls = calls if succeeded is None else succeeded
     for exp in case.accept:
         if exp.tool is None:
@@ -239,6 +241,7 @@ async def _run_once(llm, case: Case) -> dict:
     agent = await _fresh_agent(llm, case.recipe)
     calls: list[ToolCall] = []
     succeeded: list[ToolCall] = []
+    refused: list[ToolCall] = []
     dispatch = agent.tools.dispatch
 
     async def recording(call: ToolCall):
@@ -246,6 +249,8 @@ async def _run_once(llm, case: Case) -> dict:
         result = await dispatch(call)
         if "error" not in result.result:
             succeeded.append(call)
+        if result.result.get("not_changed"):
+            refused.append(call)
         return result
 
     agent.tools.dispatch = recording  # type: ignore[method-assign]
@@ -262,7 +267,7 @@ async def _run_once(llm, case: Case) -> dict:
     reply = " ".join(said)
     # the app's own follow-up questions aren't the assistant answering
     answer = " ".join(t for t in said if t != READY_QUESTION and not t.startswith("Do you want me to start a timer"))
-    ok = error is None and judge(case, calls, before, agent.session, step_before, succeeded, answer)
+    ok = error is None and judge(case, calls, before, agent.session, step_before, succeeded, answer, refused)
     await agent.timers.aclose()
     return {"ok": ok, "tools": [f"{c.name}({c.args}){'' if c in succeeded else ' -> error'}" for c in calls],
             "reply": reply, "seconds": round(seconds, 2),

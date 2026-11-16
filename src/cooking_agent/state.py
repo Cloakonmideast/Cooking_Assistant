@@ -314,7 +314,7 @@ class CookingSession:
         text = f" {amount.lower().strip()} "
         text = re.sub(r"(?<![a-z])(one|two|three|four|\d+) and a half(?![a-z])",
                       lambda m: f"{_SMALL_NUMBERS.get(m.group(1), m.group(1))} 1/2", text)
-        text = re.sub(r"(?<![a-z])half an?(?![a-z])", "1/2", text)
+        text = re.sub(r"(?<![a-z])half(?: an?)?(?= (?!as |the |of |it |that |this )[a-z])", "1/2", text)
         text = re.sub(r"(?<![a-z])a quarter(?: of)?(?: an?)?(?![a-z])", "1/4", text)
         words = set(re.findall(r"[a-z]+", text))
         direction = 1 if words & {"more", "extra"} else -1 if words & {"less", "fewer"} else 0

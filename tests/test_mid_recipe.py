@@ -370,3 +370,9 @@ def test_the_verb_leave_is_not_the_leaves_ingredient():
     s.remove_ingredient("coriander leaves")
     assert s.step_text(1) == "Leave to rest for 5 minutes."
     assert s.step_text(0).endswith("Leave out the coriander leaves.")
+
+
+def test_half_cup_without_an_article():
+    assert _amounts().change_amount("rice", "half cup less")["line"] == "1 and 1/2 cups basmati rice"
+    assert _amounts().change_amount("rice", "half cup")["line"] == "1/2 cup basmati rice"
+    assert _amounts().change_amount("rice", "half the rice")["line"] == "1 cup basmati rice"
