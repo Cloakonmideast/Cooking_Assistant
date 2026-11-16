@@ -466,7 +466,7 @@ model loaded at a time, all on the GPU, `bench --text-stt --no-instant
 --runs 3`, `diet-eval` and `understanding-eval --runs 3`.
 
 `qwen3:8b` (the default) after the Phase 2 review fixes: **tool routing 100%**
-(30/30), **understanding test 94%** (79/84 over the 28 cases), **diet test
+(30/30), **understanding test 95%** (80/84 over the 28 cases), **diet test
 10/10** (2 rewrites), LLM first token p50 / p90 1.1 s / 2.0 s.
 
 The model choice, before the review fixes (20-case understanding test):

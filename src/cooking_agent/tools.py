@@ -225,8 +225,10 @@ class ToolBox:
 
     async def dispatch(self, call: ToolCall) -> ToolResult:
         args = call.args or {}
-        if call.name == "change_recipe" and args.get("action") in ("substitute_ingredient", "substitute", "swap"):
-            # qwen3 sometimes puts the swap tool's name in change_recipe's action
+        valid = ("add_ingredient", "remove_ingredient", "change_amount", "change_step")
+        if call.name == "change_recipe" and args.get("replacement") and args.get("action") not in valid:
+            # qwen3 sometimes sends a swap as change_recipe with an invented action
+            # ("substitute_ingredient", "change_ingredient"): it's a swap
             rest = {k: v for k, v in args.items() if k not in ("action", "reason", "amount", "step_number", "text")}
             result = await self.dispatch(ToolCall("substitute_ingredient", rest, call.id))
             return ToolResult(call.name, result.result, call.id)

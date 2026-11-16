@@ -77,8 +77,12 @@ proved unreliable the behaviour moved into code.
   named `change_amount`, which doesn't exist; Ollama drops such a call and
   the cook heard **nothing**. Reworded (9/9 right after), and an empty model
   reply is now asked again once, then answered "Sorry, I didn't catch that".
-* qwen3 sometimes sent a swap as `change_recipe` with action
-  `substitute_ingredient`; it's now routed to the swap.
+* qwen3 sometimes sent a swap as `change_recipe` with an invented action
+  (`substitute_ingredient`, `change_ingredient`); any `change_recipe` call with
+  a replacement and no valid action is now routed to the swap.
+* qwen3 read back a correct change wrongly ("I've adjusted the rice to 1 cup"
+  for 1 1/2 cups); the app now reads back a changed amount itself ("Okay, now
+  1 and 1/2 cups basmati rice."), except when there's a warning to say.
 * A new prompt example ("can I use honey instead of sugar?" as answer-only)
   made "I don't have ghee, what can I use instead" answer in words; replaced.
 * Stemming had turned the verb "leave" ("Leave to rest.") into "leaf"; "I eat
@@ -86,16 +90,35 @@ proved unreliable the behaviour moved into code.
   out and putting it back in one recipe counted as a habit; "latest wins"
   used the clock, which ties on Windows (now the row order); a trailing
   "what's next" got an answer instead of the next step (now an instant
-  command while cooking).
+  command while cooking; "what now" only alone or after "done", so "I burnt
+  the onions, what now" isn't read as next step); a habit was applied to a
+  near ingredient ("coconut milk" habit to "milk", "butter" to "peanut
+  butter"; now the same ingredient only); "what if I'm vegan" saved a diet
+  (hypotheticals now ignored).
 
 **Results on qwen3:8b after the fixes** (prompt frozen): tool routing **100%**
-(30/30), understanding test **94%** (79/84; misses: one swap sent with the
-wrong action, now routed in code; "okay the garlic smells great now" taken as
-"not yet", left as a model misjudgement), diet test **10/10**. A held-out set
-of new phrasings, run once at the end and not added to the test: 5 of 6
-right ("tone down the heat a little" is ambiguous: stove heat or spice);
-"honestly I'm a vegetarian, but eggs are okay for me" saved as eggetarian on
-the real model.
+(30/30), diet test **10/10** (2 rewrites), understanding test **95%** (80/84
+over 28 cases, on the final code except the last swap-routing fix; misses: a
+swap sent with an invented action 1/3, now routed in code; "okay the garlic
+smells great now" taken as "not yet" 3/3, left as a model misjudgement).
+
+**Checked on the real model** (the reviewer's own probes, re-run): removals
+take the right ingredient and nothing claims a step was rewritten; "could I
+leave out the garlic?" is answered and offered, and a following "yes" removes
+it and stays on the step (3/3); "leave out the coriander" asks which one; a
+question keeps the timer offer; usual changes are made in code and only those
+are mentioned (dal tadka: butter instead of ghee, more garlic).
+
+**New phrasings, not in the test:** run twice. The first run got 4 of 6 and
+showed two gaps ("right, that's toasted, what's next" answered instead of
+moving on; "honestly I'm a vegetarian, but eggs are okay for me" saved by the
+model as plain vegetarian), which were fixed, so those two are no longer
+held out. The second run: 5 of 6 ("tone down the heat a little" is ambiguous:
+stove heat or spice), and the diet saved as eggetarian.
+
+**Open question for the cook:** a "leave out cashews" habit also removed the
+cashews from a kaju (cashew) curry. Not changed; the dish name doesn't say
+"cashew" in English.
 
 **Deferred (minor):** `change_step` re-offers a running step timer;
 `add_ingredient` keeps "some" in the name and can duplicate a line;
@@ -106,7 +129,7 @@ given for mid-recipe additions; "usually adds" isn't offered for book
 recipes; a failed keep-warm ping waits 15 minutes to retry; "what's in the
 next step" may be read from the recipe as a peek.
 
-Checked: every fix has a test that was seen failing first; the suite went from 404 to **531 passed**.
+Checked: every fix has a test that was seen failing first; the suite went from 404 to **550 passed**.
 README updated (what it learns, mid-recipe changes, understanding test,
 results).
 

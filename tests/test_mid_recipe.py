@@ -385,3 +385,11 @@ async def test_a_swap_sent_to_change_recipe_is_routed_to_substitute(recipe):
     out = await call(tb, "change_recipe", action="substitute_ingredient", ingredient="ghee", replacement="butter",
                      quantity="2 tbsp", unit="tbsp")
     assert out["line"] == "2 tbsp butter, instead of ghee"
+
+
+@pytest.mark.parametrize("action", ["change_ingredient", "replace_ingredient", "replace"])
+async def test_any_swap_shaped_change_recipe_is_routed(recipe, action):
+    tb = make_box(recipe)
+    await call(tb, "get_recipe", dish="jeera rice")
+    out = await call(tb, "change_recipe", action=action, ingredient="ghee", replacement="butter")
+    assert out["replacement"] == "butter"
