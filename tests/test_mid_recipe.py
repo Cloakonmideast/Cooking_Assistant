@@ -284,3 +284,39 @@ def test_ambiguous_ingredient_asks_which():
         s.remove_ingredient("salt and pepper")
     assert s.remove_ingredient("basmati")["ingredient"] == "basmati rice"
     assert s.remove_ingredient("rice flour")["ingredient"] == "rice flour"
+
+
+# ------------------------------------------------------------ review fixes: amounts (I4)
+def _amounts():
+    s = CookingSession()
+    s.load_recipe(Recipe.model_validate({"title": "T", "servings": 2, "ingredients": [
+        {"name": "basmati rice", "quantity": 2, "unit": "cups"}, {"name": "garlic", "quantity": 2, "unit": "cloves"},
+        {"name": "salt"}], "steps": [{"instruction": "Cook it."}]}))
+    return s
+
+
+@pytest.mark.parametrize("amount,line,more", [
+    ("one and a half cups", "1 and 1/2 cups basmati rice", False),
+    ("half a cup", "1/2 cup basmati rice", False),
+    ("half a cup less", "1 and 1/2 cups basmati rice", False),
+    ("1 cup more", "3 cups basmati rice", True),
+    ("3 cups", "3 cups basmati rice", True),
+    ("double", "4 cups basmati rice", True),
+    ("twice as much", "4 cups basmati rice", True),
+    ("half as much", "1 cup basmati rice", False),
+    ("a bit more", "3 cups basmati rice", True),
+    ("less", "1 cup basmati rice", False),
+])
+def test_amounts_read_correctly(amount, line, more):
+    out = _amounts().change_amount("rice", amount)
+    assert (out["line"], out["more"]) == (line, more)
+
+
+def test_more_cloves_adds_to_the_amount():
+    assert _amounts().change_amount("garlic", "2 more cloves")["line"] == "4 cloves garlic"
+    assert _amounts().change_amount("garlic", "2 more")["line"] == "4 cloves garlic"
+
+
+def test_zero_amount_is_refused():
+    with pytest.raises(InvalidTransition, match="leave it out"):
+        _amounts().change_amount("garlic", "0")

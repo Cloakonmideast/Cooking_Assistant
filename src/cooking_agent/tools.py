@@ -646,8 +646,9 @@ class ToolBox:
                 raise InvalidTransition(f"How much {a.ingredient}? For example '2 tablespoons', 'double' or 'half'.")
             out = s.change_amount(a.ingredient, a.amount)
             more = out.pop("more")
-            self._record("more" if more else "less", out["ingredient"])
-            if not more:
+            if more is not None:  # a unit change ("2 tbsp" for "1 cup") says nothing about taste
+                self._record("more" if more else "less", out["ingredient"])
+            if more is False:
                 return out
         if conflicts := self._conflicts([out["ingredient"]], self._request):
             out["warnings"] = [self._warning_text(c) for c in conflicts]

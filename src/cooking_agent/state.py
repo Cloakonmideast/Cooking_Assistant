@@ -24,6 +24,7 @@ from .recipe import Ingredient, Recipe, Step, format_minutes, ingredient_words, 
 _GENERIC_WORDS = {"seed", "powder", "leaf", "oil", "sauce", "paste", "nut", "fresh", "ground", "whole",
                   "chopped", "dried", "green", "red", "white", "black", "large", "small"}
 # "double the garlic", "less salt": multipliers for change_amount.
+_SMALL_NUMBERS = {"one": "1", "two": "2", "three": "3", "four": "4"}
 AMOUNT_WORDS = {"double": 2.0, "twice": 2.0, "triple": 3.0, "half": 0.5, "halve": 0.5,
                 "more": 1.5, "extra": 1.5, "less": 0.5}
 
@@ -284,25 +285,48 @@ class CookingSession:
         return {"added": ing.describe(self.scale_factor), "ingredient": ing.name}
 
     def change_amount(self, query: str, amount: str) -> dict:
-        """``amount``: "2 tbsp" (at the current servings), or double/half/more/less."""
+        """``amount`` at the current servings: "2 tbsp", "one and a half cups",
+        "half a cup less", "2 more cloves" (added to the amount), or a bare
+        double / twice as much / half / more / less. ``more`` in the result is
+        whether the amount went up (None if the unit changed)."""
         recipe = self._require_recipe()
         idx = self._require_ingredient(query)
         ing = recipe.ingredients[idx]
-        factor = next((AMOUNT_WORDS[w] for w in _word_set(amount) if w in AMOUNT_WORDS), None)
-        if factor is not None:
+        text = f" {amount.lower().strip()} "
+        text = re.sub(r"(?<![a-z])(one|two|three|four|\d+) and a half(?![a-z])",
+                      lambda m: f"{_SMALL_NUMBERS.get(m.group(1), m.group(1))} 1/2", text)
+        text = re.sub(r"(?<![a-z])half an?(?![a-z])", "1/2", text)
+        text = re.sub(r"(?<![a-z])a quarter(?: of)?(?: an?)?(?![a-z])", "1/4", text)
+        words = set(re.findall(r"[a-z]+", text))
+        direction = 1 if words & {"more", "extra"} else -1 if words & {"less", "fewer"} else 0
+        number_text = re.sub(r"(?<![a-z])(?:more|less|extra|fewer|than|usual|of it)(?![a-z])", " ", text).strip()
+        parsed = parse_ingredient_line(f"{number_text} {ing.name}") if number_text else None
+        unit_changed = False
+        if parsed is not None and parsed.quantity is not None:
+            if parsed.quantity == 0:
+                raise InvalidTransition(f"To take the {ing.name} out completely, just say leave it out.")
+            said = parsed.quantity / self.scale_factor  # stored at the recipe's own servings
+            same_unit = parsed.unit is None or ing.unit is None or _word_set(parsed.unit) == _word_set(ing.unit)
+            unit_changed = not same_unit
+            if direction and ing.quantity is not None and same_unit:
+                quantity = ing.quantity + direction * said
+                if quantity <= 0:
+                    raise InvalidTransition(f"That would leave no {ing.name}. To take it out, say leave it out.")
+            else:
+                quantity = said
+            new = ing.model_copy(update={"quantity": quantity, "unit": parsed.unit or ing.unit, "original": None})
+            more = None if unit_changed else (ing.quantity is None or quantity > ing.quantity)
+        else:
+            factor = next((AMOUNT_WORDS[w] for w in ("double", "twice", "triple", "half", "halve") if w in words),
+                          None) or next((AMOUNT_WORDS[w] for w in ("more", "extra", "less") if w in words), None)
+            if factor is None:
+                raise InvalidTransition(f"Say an amount for {ing.name}, like '2 tablespoons', 'double' or 'half'.")
             if ing.quantity is None:
                 note = "a little more than usual" if factor > 1 else "a little less than usual"
                 new = ing.model_copy(update={"note": note, "original": None})
             else:
                 new = ing.model_copy(update={"quantity": ing.quantity * factor, "original": None})
             more = factor > 1
-        else:
-            parsed = parse_ingredient_line(f"{amount} {ing.name}")
-            if parsed.quantity is None:
-                raise InvalidTransition(f"Say an amount for {ing.name}, like '2 tablespoons', 'double' or 'half'.")
-            new = ing.model_copy(update={"quantity": parsed.quantity / self.scale_factor,
-                                         "unit": parsed.unit or ing.unit, "original": None})
-            more = ing.quantity is None or new.quantity > ing.quantity
         recipe.ingredients[idx] = new
         return {"ingredient": new.name, "was": ing.describe(self.scale_factor),
                 "line": new.describe(self.scale_factor), "more": more}
