@@ -305,9 +305,18 @@ class PreferenceStore:
         """Changes grouped by what they're about ("onions", "onion" and "red
         onion" are one), each with the number of different recipes it was made
         in, when it was last made, and the name it was most often called."""
+        rows = self._db.execute(
+            "SELECT id, kind, original, replacement, load_id, ts FROM adjustments ORDER BY id").fetchall()
+        # A change undone in the same recipe (cashews out, then back in) cancels out.
+        kinds_per_load: dict[tuple, set] = collections.defaultdict(set)
+        for i, kind, original, replacement, load_id, ts in rows:
+            if load_id is not None:
+                kinds_per_load[(load_id, _topic(kind, original, replacement))].add(_direction(kind, original))
+        undone = {k for k, dirs in kinds_per_load.items() if len(dirs) > 1}
         groups: dict[tuple, dict] = {}
-        for i, kind, original, replacement, load_id, ts in self._db.execute(
-                "SELECT id, kind, original, replacement, load_id, ts FROM adjustments ORDER BY id").fetchall():
+        for i, kind, original, replacement, load_id, ts in rows:
+            if load_id is not None and (load_id, _topic(kind, original, replacement)) in undone:
+                continue
             key = (kind, habit_key(original), habit_key(replacement) if replacement else "")
             g = groups.setdefault(key, {"loads": set(), "names": collections.Counter(),
                                         "repl": collections.Counter(), "last": 0.0})
@@ -315,7 +324,7 @@ class PreferenceStore:
             g["names"][original] += 1
             if replacement:
                 g["repl"][replacement] += 1
-            g["last"] = max(g["last"], ts)
+            g["last"] = max(g["last"], i)  # row id: later is later, even within one clock tick
 
         def name(c: collections.Counter) -> Optional[str]:
             return min(c, key=lambda n: (-c[n], len(n), n)) if c else None
@@ -355,17 +364,17 @@ class PreferenceStore:
             (INGREDIENT_MIN_RECIPES, TOP_INGREDIENTS)).fetchall()
         if used:
             out["often_cooks_with"] = [n for (n,) in used]
-        # Opposite habits (more/less, leave out/add, ghee->butter/butter->ghee): the latest wins.
+        # Opposite habits (more/less, leave out/add, ghee->butter/butter->ghee) and two swaps from
+        # the same thing (ghee->butter, ghee->oil): the latest wins.
         decided: set = set()
         habits = sorted((a for a in self._grouped_adjustments() if a["times"] >= ADJUST_MIN_TIMES),
                         key=lambda a: -a["last"])
         for a in habits:
             kind, (orig, repl) = a["kind"], a["key"]
-            topic = (("amount", orig) if kind in ("more", "less") else ("in-out", orig) if kind in ("remove", "add")
-                     else ("swap", frozenset((orig, repl))))
-            if topic in decided:
+            topics = {_topic(kind, orig, repl)} | ({("swap-from", orig)} if kind == "swap" else set())
+            if topics & decided:
                 continue
-            decided.add(topic)
+            decided |= topics
             items = out.setdefault(_HABIT_KEYS[kind], [])
             if len(items) < TOP_ADJUSTMENTS:
                 items.append({"from": a["original"], "to": a["replacement"]} if kind == "swap" else a["original"])
@@ -399,6 +408,21 @@ def _diet_rule(stated: str) -> str:
     """'vegetarian' -> 'vegetarian (no meat, poultry, fish, ...)'; unknown diets as said."""
     known = sorted(diets_in(stated) & DIETS.keys())
     return diet_hint(known[0]) if known else stated
+
+
+def _topic(kind: str, original: str, replacement: Optional[str]) -> tuple:
+    """What a change is about, so opposite changes can be compared."""
+    o = habit_key(original)
+    if kind in ("more", "less"):
+        return ("amount", o)
+    if kind in ("remove", "add"):
+        return ("in-out", o)
+    return ("swap", frozenset((o, habit_key(replacement or ""))))
+
+
+def _direction(kind: str, original: str) -> str:
+    """Which way a change goes within its topic (a swap's direction is its starting point)."""
+    return habit_key(original) if kind == "swap" else kind
 
 
 def _habit_text(kind: str, original: str, replacement: Optional[str]) -> str:
