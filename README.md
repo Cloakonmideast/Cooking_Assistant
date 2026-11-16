@@ -209,7 +209,7 @@ loop), `sqlite3` (recipe book), `urllib` (fetching recipe pages), `argparse`
 | `list_ingredients` | "What do I need?" |
 | `scale_servings` | "Make it for six people." |
 | `substitute_ingredient` | "I don't have ghee, what can I use?" |
-| `change_recipe` | Mid-recipe: "Skip the cashews." "Add some peas." "Make it less spicy." "Double the garlic." "Fry it for 5 minutes instead." (the current step is kept; steps that mention a removed ingredient are reworded) |
+| `change_recipe` | Mid-recipe: "Skip the cashews." "Add some peas." "Make it less spicy." "Double the garlic." "Fry it for 5 minutes instead." (the current step is kept; when a step mentions something you took out or swapped, the app adds "Leave out the cashews." or "Use butter instead of ghee." as it reads it; "could I leave out the garlic?" is answered, not acted on; an ingredient that matches more than one line ("the rice") gets "Which one?") |
 | *(no tool)* | Questions about the dish, answered from the recipe you're cooking: "How do I know the rice is done?" "Why do we soak it?" "Can I use brown rice?" |
 | `set_timer` / `cancel_timer` / `list_timers` | "Set a rice timer for 12 minutes." "How long is left?" "Stop the pasta timer." |
 | `list_saved_recipes` / `save_recipe` | "What recipes do I have?" "Save this one." |
@@ -324,20 +324,29 @@ LLM with each turn and each new recipe:
 * **What you tell it**, kept until you say otherwise: allergies, health
   conditions and intolerances, diet, dislikes, likes, what you usually have at
   home. "I'm lactose intolerant." "I'm allergic to cashews." "I'm vegetarian."
-  "I always have paneer and ghee." "Forget that I don't like mushrooms."
+  "I always have paneer and ghee." "Forget that I don't like mushrooms." A diet
+  you mention about yourself in passing ("honestly I'm vegetarian, but eggs
+  are okay", "we're vegan") is saved straight away by the app itself, and the
+  newest one replaces an older one.
 * **What it learns**, from what you actually do: a diet you've asked for in
   most recent requests (at least 3 times), how many people you usually cook for
   (used when you don't say), ingredients that appear in at least two
   recipes you actually started cooking, and **the changes you keep making**:
   swaps ("butter instead of ghee"), things you leave out or add, more or less
   of something. Every change is saved straight away; it becomes a habit once
-  you've made it in two different recipes, so a one-off "no cashews today"
-  doesn't change future recipes.
+  you've made it in two different recipes ("onions", "onion" and "red onion"
+  count as the same thing), so a one-off "no cashews today" doesn't change
+  future recipes, and taking something out and putting it back in the same
+  recipe cancels out. If two habits contradict, the latest wins. "Forget that
+  I swap ghee for butter" drops one habit; `prefs forget-history` drops all.
 
-New recipes apply your usual changes ("I used butter instead of ghee, like you
-usually do"). For a recipe from your own book, it offers them instead and only
-makes them if you say yes. A learned habit is never applied if it clashes
-with an allergy, condition or stated diet. A diet it has only learned (you
+When a new recipe is written, the app itself makes your usual changes to it
+(swaps, things left out, more or less of something) and the assistant only
+mentions the ones it actually made. For a recipe from your own book, it
+offers them instead and only makes them if you say yes. A learned habit is
+never applied if it clashes with an allergy, condition or stated diet, and a
+learned "more" isn't applied to something a condition limits (more salt with
+high blood pressure, more sugar with diabetes). A diet it has only learned (you
 usually ask for vegetarian but never said so) gives a heads-up if a recipe
 breaks it ("this has chicken, and you usually cook vegetarian") but never
 forces a rewrite; only a diet you've stated does that.
@@ -351,7 +360,7 @@ are left out, and ingredients you usually have are preferred, unless they
 clash with an allergy or condition. What you ask for in the moment wins for
 diet and taste ("chicken biryani, just this once"), never for allergies or
 conditions. When it applied something it learned rather than something you
-said, it tells you.
+said, it tells you (only what it actually changed).
 
 **Safety check.** Every recipe's ingredients are also checked in code against
 your allergies and conditions, with common families (tree nuts, shellfish,
@@ -436,27 +445,35 @@ recipes for reading.
 
 ### Understanding test
 
-`cooking-agent understanding-eval` checks what the assistant does with 20
-things a cook might say on step 2 of a pulao, right after "Are you ready for
-the next step?": questions about the dish ("would brown rice work here?"),
-changes ("drop the cashews", "can you make it milder"), loose commands
-("alright, the cashews look golden", "we're cooking for four now") and
-chit-chat. A question must get an answer with the step and recipe untouched; a
-change must really change the recipe (the cashews are gone) without moving
-the step; a tool that returned an error doesn't count. Each case runs 3 times
+`cooking-agent understanding-eval` checks what the assistant does with 28
+things a cook might say on step 2 of a pulao or a tomato spaghetti, right
+after "Are you ready for the next step?": questions about the dish ("would
+brown rice work here?", "could I leave out the garlic?"), changes ("drop the
+cashews", "can you make it milder", "use half a cup less water"), loose
+commands ("alright, the cashews look golden", "we're cooking for four now")
+and chit-chat. A question must get a spoken answer (not silence or an error
+message) with the step and recipe untouched; a change must really change the
+recipe, including what the steps will say, without moving the step; a tool
+that returned an error doesn't count. It exits with an error below 90%
+(`--min-accuracy`). Each case runs 3 times
 (`--runs`), with instant commands on as in real use, on a throwaway recipe
 book and profile. `--out FILE` keeps every reply.
 
 ### Choosing the local model
 
 Measured 2026-11-16 on an RTX 4060 Laptop GPU (8 GB), Ollama 0.40.16, one
-model loaded at a time, all on the GPU. Phase 2 (after the eggetarian diet,
-mid-recipe changes and the history fix), `bench --text-stt --no-instant
---runs 3`, `diet-eval` and `understanding-eval --runs 3`:
+model loaded at a time, all on the GPU, `bench --text-stt --no-instant
+--runs 3`, `diet-eval` and `understanding-eval --runs 3`.
+
+`qwen3:8b` (the default) after the Phase 2 review fixes: **tool routing 100%**
+(30/30), **understanding test 94%** (79/84 over the 28 cases), **diet test
+10/10** (2 rewrites), LLM first token p50 / p90 1.1 s / 2.0 s.
+
+The model choice, before the review fixes (20-case understanding test):
 
 | Model | Tool routing | Understanding test | LLM first token p50 / p90 | Diet test |
 |---|---|---|---|---|
-| **`qwen3:8b`** (default) | **97%** | **100%** (60/60) | 1.0 s / 1.7 s | **10/10** (1 rewrite) |
+| **`qwen3:8b`** | **97%** | **100%** (60/60) | 1.0 s / 1.7 s | **10/10** (1 rewrite) |
 | `gemma4:e4b` | 67% (answered in words instead of calling `get_recipe`, `next_step`, `substitute_ingredient`, `set_timer` in 10 of 30 turns) | 98% (one "milder" call had a bad argument) | **0.7 s** / 2.4 s | 9/10 (left a "Worcestershire sauce substitute" in a vegetarian caesar salad) |
 
 Phase 1 (first prompt, same benchmark): `qwen3:8b` 90% routing, 10/10 diets;

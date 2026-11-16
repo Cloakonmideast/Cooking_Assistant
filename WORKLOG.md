@@ -5,6 +5,113 @@ says what was done, why, and how it was checked.
 
 ---
 
+## 2026-11-16 — Phase 2, Task 14: Fable review and fixes
+
+A Fable reviewer read all of Phase 2 and probed it on the real qwen3:8b.
+Verdict: **ready with fixes**. Two of the requests didn't hold up on the real
+model (learned habits weren't in new recipes; removals left the spoken steps
+unchanged), and a diet said in conversation wasn't saved (older than Phase 2).
+Everything Critical and Important was fixed test-first; where the model had
+proved unreliable the behaviour moved into code.
+
+**Critical**
+* **C1 — habits weren't applied, but the assistant said they were.** The app
+  now makes the cook's usual swaps, leave-outs and more/less changes to a newly
+  written recipe itself, and the assistant mentions only what was actually
+  changed. It skips an ingredient the request names ("cumin rice") or that
+  matches more than one line, and applying a habit isn't counted as new
+  evidence for it. "More/less" left the writer's prompt so it isn't applied
+  twice.
+* **C2 — "I'm vegetarian but I eat eggs" in conversation wasn't saved** (the
+  model said "I'll remember" without saving). First-person diet statements
+  ("I'm vegetarian", "we're vegan", "I eat eggs but no meat", "honestly I'm a
+  vegetarian, but eggs are okay") are now saved by the app before the model's
+  turn; the newest replaces an older vegetarian/eggetarian/vegan/Jain one;
+  requests ("I'm making a vegetarian biryani"), other people, negations and
+  one-offs ("vegan today") don't count. The recipe writer gets one rule per
+  diet in effect.
+
+**Important**
+* **I1 — removed ingredients were still in the spoken steps** (the model said
+  "step 4 has been updated" in 5 of 5 runs, but never changed it). Now, when a
+  step mentions something taken out or swapped, the app adds "Leave out the
+  mint leaves." / "Use butter instead of ghee." as it reads it (and in the
+  recipe the model sees).
+* **I2 — "could I leave out the garlic?" removed the garlic** (3 of 3) and
+  counted toward a habit. Asking whether ("could I / can we / is it okay to /
+  would it work without / what if I") no longer changes the recipe; "can you
+  leave out the garlic" still does. When the model ends on its own question
+  ("want me to take it out?"), a "yes" answers that, not the earlier "ready
+  for the next step?".
+* **I3 — habits rarely formed** ("onions", "onion", "red onion" were three
+  different things). Grouped by a stemmed name now; the name shown is the one
+  used most.
+* **I4 — amounts misread** ("half a cup less" halved it, "2 more cloves" set
+  it to 3 cups). Numbers are read first ("one and a half cups", "half cup"),
+  "N more/less" adds or takes away, double/half/more/less only when no number
+  was said, and 0 is refused ("say leave it out").
+* **I5 — an ambiguous ingredient silently picked the first** ("rice" removed
+  rice flour). It now asks "Which one: rice flour, basmati rice?".
+* **I6 — plurals and spellings** (chilli/chillies/chili, leaf/leaves) now match.
+* **I7 — learned "more salt" passed with high blood pressure.** A learned
+  "more"/"add" isn't passed on for things a condition limits (salt and soy
+  with blood pressure, sugar/jaggery/honey with diabetes, butter/ghee/cream
+  with cholesterol); a "nuts" allergy also keeps peanut habits out (habit
+  filter only).
+* **I8 — "vegetarian, I don't like to eat eggs" became eggetarian.** The whole
+  clause is checked now ("stopped eating", "avoid", "can't", "my husband eats
+  eggs but I don't"); doubt resolves to plain vegetarian. Also understood:
+  "vegetarian with/plus/except eggs", "egg vegetarian", "eggetarians".
+* **I9 — a question while the timer offer was open dropped the offer.** The
+  offer is asked again after a question.
+* **I10 — the understanding test flattered** (a model that always failed
+  scored 55%). An answer must now be something spoken that isn't an error or
+  "didn't catch that"; removals are checked in the spoken steps too; 8 new
+  cases (including the reviewer's) and a second dish; the prompt's examples
+  moved off the test's topics; it exits with an error below 90%.
+* **I11 — no way to drop one habit by voice.** "Forget that I swap ghee for
+  butter" now works; contradicting habits: the latest wins.
+
+**Found while checking the fixes on the real model, also fixed test-first**
+* The prompt's wording ("means change_amount less") made qwen3 call a tool
+  named `change_amount`, which doesn't exist; Ollama drops such a call and
+  the cook heard **nothing**. Reworded (9/9 right after), and an empty model
+  reply is now asked again once, then answered "Sorry, I didn't catch that".
+* qwen3 sometimes sent a swap as `change_recipe` with action
+  `substitute_ingredient`; it's now routed to the swap.
+* A new prompt example ("can I use honey instead of sugar?" as answer-only)
+  made "I don't have ghee, what can I use instead" answer in words; replaced.
+* Stemming had turned the verb "leave" ("Leave to rest.") into "leaf"; "I eat
+  eggs and fish, no meat" became eggetarian (fish flagged); taking something
+  out and putting it back in one recipe counted as a habit; "latest wins"
+  used the clock, which ties on Windows (now the row order); a trailing
+  "what's next" got an answer instead of the next step (now an instant
+  command while cooking).
+
+**Results on qwen3:8b after the fixes** (prompt frozen): tool routing **100%**
+(30/30), understanding test **94%** (79/84; misses: one swap sent with the
+wrong action, now routed in code; "okay the garlic smells great now" taken as
+"not yet", left as a model misjudgement), diet test **10/10**. A held-out set
+of new phrasings, run once at the end and not added to the test: 5 of 6
+right ("tone down the heat a little" is ambiguous: stove heat or spice);
+"honestly I'm a vegetarian, but eggs are okay for me" saved as eggetarian on
+the real model.
+
+**Deferred (minor):** `change_step` re-offers a running step timer;
+`add_ingredient` keeps "some" in the name and can duplicate a line;
+`substitute_ingredient` takes amounts at the recipe's own servings while
+`change_recipe` uses the current ones; a one-off "strictly vegetarian for a
+guest" isn't egg-checked for an eggetarian; the learned-diet heads-up isn't
+given for mid-recipe additions; "usually adds" isn't offered for book
+recipes; a failed keep-warm ping waits 15 minutes to retry; "what's in the
+next step" may be read from the recipe as a peek.
+
+Checked: 31 new tests (each seen failing first), full suite **531 passed**.
+README updated (what it learns, mid-recipe changes, understanding test,
+results).
+
+---
+
 ## 2026-11-16 — Phase 2, Task 13: Gemma 4 tested, qwen3:8b kept
 
 * Same frozen prompt for both, one model loaded at a time (`ollama stop` the

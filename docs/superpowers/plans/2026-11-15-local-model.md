@@ -27,7 +27,7 @@
 | 11. Keep the model loaded (15-min and pre-timer pings) | done |
 | 12. Understanding test (questions, changes, commands) | done |
 | 13. Test Gemma 4 and select the best model | done (qwen3:8b kept) |
-| 14. Fable review of Phase 2 | not started |
+| 14. Fable review of Phase 2 | done (review fixes applied) |
 
 **Execution approach:** Native: Opus 5.5 builds every task in the main session, Fable (the configured `advisorModel`) advises at decision points, and a fresh Fable reviewer subagent reviews the whole branch at the end. Its findings are fixed and logged before handing back to the user.
 **Branch:** `local-model` (from `windows-py311-fixes`).
@@ -353,3 +353,8 @@ Today only allergies and health conditions are checked in code; diets rely on th
 - **2026-11-16** — User approved the diet proposal: new Task 6 (diet check in code); measuring becomes Task 7 and adds an automatic diet test (`cooking-agent diet-eval`). User approved running the Ollama install and model downloads.
 - **2026-11-16** — All 7 tasks done. Fable reviewed the whole branch ("with fixes"): 9 important issues plus one upgraded minor (cold-load silence) fixed test-first (`tests/test_review_fixes.py`); minors deferred and listed in WORKLOG.md. Suite 308/308.
 - **2026-11-16** — Phase 2 added from the user's requests: eggetarian diet, learning every preference, mid-recipe questions and changes, keep-warm pings, Gemma 4 test, understanding test, Fable review.
+- **2026-11-16** — Phase 2 built (Tasks 8–13) and reviewed by Fable (Task 14): verdict "ready with fixes", 2
+  Critical and 11 Important findings, all fixed test-first and checked on the real model; minors deferred
+  (WORKLOG). Design changes from the review: learned habits are applied to new recipes in code (not left to
+  the writer), stated diets are saved in code, steps after a change get "Leave out ..."/"Use ... instead"
+  notes in code instead of being rewritten by the model, "could I ...?" never changes the recipe.
