@@ -24,7 +24,7 @@ from dotenv import load_dotenv
 
 from .agent import AgentConfig, CookingAgent
 from .audio import MicSource, SimulatedSink, SoundDeviceSink, dbfs, pcm_rms
-from .config import Settings, make_llm, make_stt, make_tts, open_preferences, open_recipe_store
+from .config import Settings, make_import_llm, make_llm, make_stt, make_tts, open_preferences, open_recipe_store
 from .metrics import MetricsSink
 
 
@@ -54,6 +54,7 @@ async def _run(args: argparse.Namespace) -> int:
     if hasattr(tts, "warmup"):
         with contextlib.suppress(Exception):
             await tts.warmup()
+    await _warm_up_llm(llm)
     print(f"providers: stt={stt.name} llm={llm.name} tts={tts.name}; "
           f"wake word: {s.wake_word or '(none, always listening)'}; barge-in: {s.barge_in}; "
           f"recipe book: {len(store)} recipes")
@@ -65,6 +66,19 @@ async def _run(args: argparse.Namespace) -> int:
         if hasattr(tts, "aclose"):
             await tts.aclose()
     return 0
+
+
+async def _warm_up_llm(llm) -> None:
+    """Load a local model before the first question, so it isn't met with a
+    minute of silence. If it fails, the first turn says the AI is unreachable."""
+    if not hasattr(llm, "warmup"):
+        return
+    print("loading the AI model (the first time after starting Ollama can take a minute)...", flush=True)
+    try:
+        await llm.warmup()
+    except Exception as e:  # Ollama not running, model not downloaded, ...
+        print(f"could not load the AI model: {type(e).__name__}: {e}. Everyday commands still work; "
+              f"check it with cooking-agent diagnose.", flush=True)
 
 
 # ------------------------------------------------------------------ chat
@@ -83,8 +97,10 @@ async def _chat(args: argparse.Namespace) -> int:
     agent = CookingAgent(QueueSTT(), llm, tts, sink, AgentConfig(barge_in=False),
                          MetricsSink(s.metrics_path), on_text=_print_text, recipes=open_recipe_store(s),
                          preferences=prefs)
+    await _warm_up_llm(llm)
     loop = asyncio.get_running_loop()
     timers_task = asyncio.create_task(agent._announcer())  # timer announcements in text mode
+    warm_task = asyncio.create_task(agent.keep_warm())  # keep the local model loaded between messages
     print(f"text mode (llm={llm.name}). Type a message, empty line or Ctrl+D to quit.")
     if prefs.needs_setup():
         agent.begin_setup()
@@ -100,6 +116,7 @@ async def _chat(args: argparse.Namespace) -> int:
                   f"tools: {', '.join(last['tool_calls']) or 'none'})")
     finally:
         timers_task.cancel()
+        warm_task.cancel()
         await agent.timers.aclose()
     return 0
 
@@ -120,10 +137,7 @@ async def _recipes(args: argparse.Namespace) -> int:
     settings = Settings.from_env()
     store = open_recipe_store(settings)
     if args.action == "add":
-        try:
-            llm = make_llm(settings)
-        except RuntimeError:  # no GEMINI_API_KEY: fine for pages with recipe data and our own files
-            llm = None
+        llm = make_import_llm(settings)  # Gemini if its key is set, else the local model, else none
         print(f"reading {args.source} ...")
         try:
             result = await import_recipe(args.source, llm=llm, transcriber=make_transcriber(llm),
@@ -215,7 +229,8 @@ async def _prefs(args: argparse.Namespace) -> int:
         return 0 if removed else 1
     elif args.action == "forget-history":
         prefs.forget_history()
-        print("forgot learned habits (recipe requests and ingredient counts); stated preferences kept")
+        print("forgot learned habits (recipe requests, ingredient counts and usual changes); "
+              "stated preferences kept")
     stated = prefs.stated()
     learned = prefs.learned()
     print("stated preferences:" if stated else "stated preferences: none")
@@ -223,7 +238,9 @@ async def _prefs(args: argparse.Namespace) -> int:
         print(f"  {r['category']:<10} {r['value']}")
     print("learned from history:" if learned else "learned from history: nothing yet")
     for k, v in learned.items():
-        print(f"  {k.replace('_', ' ')}: {', '.join(v) if isinstance(v, list) else v}")
+        if isinstance(v, list):
+            v = ", ".join(f"{x['from']} to {x['to']}" if isinstance(x, dict) else str(x) for x in v)
+        print(f"  {k.replace('_', ' ')}: {v}")
     return 0
 
 
@@ -236,12 +253,45 @@ async def _bench(args: argparse.Namespace) -> int:
 
     report = await run_benchmark(Path(args.fixtures) if args.fixtures else DEFAULT_FIXTURES,
                                  runs=args.runs, fake=args.fake, realtime=not args.no_realtime,
-                                 only=args.only or None, timeout_s=args.timeout)
+                                 only=args.only or None, timeout_s=args.timeout,
+                                 text_stt=args.text_stt, instant=not args.no_instant)
     print(format_report(report))
     if args.out:
         Path(args.out).write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
         print(f"wrote {args.out}")
     return 1 if report["summary"]["errors"] else 0
+
+
+# ------------------------------------------------------------------ diet-eval
+async def _diet_eval(args: argparse.Namespace) -> int:
+    import json
+    from pathlib import Path
+
+    from .diet_eval import format_diet_report, run_diet_eval
+
+    report = await run_diet_eval(make_llm(Settings.from_env()))
+    print(format_diet_report(report))
+    if args.out:
+        Path(args.out).write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+        print(f"wrote {args.out}")
+    return 0 if report["summary"]["passed"] == report["summary"]["total"] else 1
+
+
+# ------------------------------------------------------------------ understanding-eval
+async def _understanding_eval(args: argparse.Namespace) -> int:
+    import json
+    from pathlib import Path
+
+    from .understanding_eval import format_understanding_report, run_understanding_eval
+
+    llm = make_llm(Settings.from_env())
+    await _warm_up_llm(llm)
+    report = await run_understanding_eval(llm, runs=args.runs)
+    print(format_understanding_report(report))
+    if args.out:
+        Path(args.out).write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+        print(f"wrote {args.out}")
+    return 0 if report["summary"]["accuracy"] >= args.min_accuracy else 1
 
 
 # ------------------------------------------------------------------ diagnose
@@ -362,6 +412,20 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--fixtures", default=None, help="directory with manifest.json (default bench/fixtures)")
     b.add_argument("--timeout", type=float, default=45.0, help="seconds per fixture")
     b.add_argument("--out", default=None, help="write the full JSON report here")
+    b.add_argument("--text-stt", action="store_true",
+                   help="feed each fixture's text instead of recognising its audio (compare LLMs, not STT)")
+    b.add_argument("--no-instant", action="store_true",
+                   help="send every fixture to the LLM; instant commands off (measure the model itself)")
+
+    de = sub.add_parser("diet-eval", help="check that the LLM's recipes keep to diets, allergies and conditions")
+    de.add_argument("--out", default=None, help="write the full JSON report here")
+
+    ue = sub.add_parser("understanding-eval",
+                        help="check the LLM handles questions, changes and loose commands mid-recipe")
+    ue.add_argument("--runs", type=int, default=3, help="times to run each case (default 3)")
+    ue.add_argument("--out", default=None, help="write the full JSON report here")
+    ue.add_argument("--min-accuracy", type=float, default=0.9,
+                    help="exit with an error below this share of right answers (default 0.9)")
 
     d = sub.add_parser("diagnose", help="check devices, mic level and providers")
     d.add_argument("--mic-seconds", type=float, default=3.0, help="0 to skip the mic test")
@@ -373,7 +437,8 @@ def main(argv: list[str] | None = None) -> int:
     for noisy in ("httpx", "websockets", "google_genai"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
     handler = {"run": _run, "chat": _chat, "demo": _demo, "bench": _bench, "recipes": _recipes, "prefs": _prefs, "setup": _setup,
-               "diagnose": _diagnose}[args.cmd]
+               "diagnose": _diagnose, "diet-eval": _diet_eval,
+               "understanding-eval": _understanding_eval}[args.cmd]
     try:
         return asyncio.run(handler(args))
     except KeyboardInterrupt:

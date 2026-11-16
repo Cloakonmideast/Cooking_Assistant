@@ -79,6 +79,12 @@ class Step(BaseModel):
         default=None, gt=0, description="If the step involves waiting, how many minutes."
     )
 
+    @field_validator("timer_minutes", mode="before")
+    @classmethod
+    def _zero_is_no_timer(cls, v):
+        # Models held to the JSON schema often write 0 instead of leaving it out.
+        return None if v in (0, 0.0, "0") else v
+
     @model_validator(mode="after")
     def _timer_from_text(self) -> "Step":
         # Recipes from the web or the cook's own files rarely mark timers, and
@@ -245,3 +251,32 @@ def parse_ingredient_line(line: str) -> Ingredient:
     name = text.strip(" ,") or line.strip()
     return Ingredient(name=name, quantity=quantity, unit=unit.lower() if unit else None,
                       note=", ".join(n for n in notes if n) or None, original=" ".join(line.split()))
+
+
+# ---------------------------------------------------------------- ingredient words
+# Words that don't name an ingredient ("some of the peas").
+_FILLER_WORDS = {"the", "a", "an", "some", "of", "any", "my", "this", "that", "few", "bit", "little", "and", "or"}
+# Spellings of the same thing, after plurals are removed.
+_SAME_WORD = {"chilly": "chilli", "chili": "chilli", "chile": "chilli", "chily": "chilli",
+              "yoghurt": "yogurt", "coriandre": "coriander"}
+# -ves plurals, mapped whole so the verb "leave" ("leave to rest") isn't the noun "leaf"
+_VES_PLURALS = {"leaves": "leaf", "loaves": "loaf", "halves": "half"}
+
+
+def stem_word(w: str) -> str:
+    """'chillies' -> 'chilli', 'leaves' -> 'leaf', 'tomatoes' -> 'tomato', 'onions' -> 'onion'."""
+    w = w.lower()
+    if w in _VES_PLURALS:
+        return _VES_PLURALS[w]
+    if w.endswith("ies") and len(w) > 4:
+        w = w[:-3] + "y"
+    elif w.endswith(("ches", "shes", "xes", "oes")):
+        w = w[:-2]
+    elif w.endswith("s") and not w.endswith(("ss", "us")) and len(w) > 3:
+        w = w[:-1]
+    return _SAME_WORD.get(w, w)
+
+
+def ingredient_words(text: str) -> list[str]:
+    """The words that name an ingredient, stemmed, in order."""
+    return [stem_word(w) for w in re.findall(r"[a-z]+", text.lower()) if w not in _FILLER_WORDS]

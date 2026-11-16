@@ -20,41 +20,123 @@ Everything runs on one asyncio event loop. The LLM and the TTS run
 concurrently, so the first sentence is already being spoken while the model is
 still writing the rest.
 
-## Quick start
+## Setup
 
-Requires Python 3.11+.
+Requires Python 3.11 or newer (`python --version`; on Windows `py -0` lists
+what is installed). No other system tools are needed.
 
-```bash
-python -m venv .venv
+### 1. Create a virtual environment and install
+
+**Windows (PowerShell)**, in the project folder:
+
+```powershell
+py -3.11 -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+pip install -e .
 ```
 
+If PowerShell refuses to run `Activate.ps1`, allow local scripts once with
+`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, then try again.
+
+**macOS / Linux:**
+
 ```bash
+python3 -m venv .venv
 source .venv/bin/activate
-```
-
-```bash
 pip install -r requirements.txt && pip install -e .
 ```
 
-```bash
-cp .env.example .env   # then add GEMINI_API_KEY and (recommended) DEEPGRAM_API_KEY
+When the environment is active your prompt starts with `(.venv)`. Activate it
+again in every new terminal before using `cooking-agent`.
+
+### 2. Add your API keys
+
+Copy the template and fill it in (`copy .env.example .env` on Windows,
+`cp .env.example .env` elsewhere):
+
+* No key is needed for the AI itself: by default it runs on your computer
+  through Ollama (next section).
+* `GEMINI_API_KEY` (**optional, recommended for importing recipes**): used
+  to read recipe photos, PDFs and recordings, and to transcribe videos when
+  there is no Deepgram key. Free key at <https://aistudio.google.com/apikey>.
+  To use Gemini for the conversation too, set `LLM_PROVIDER=gemini`.
+* `DEEPGRAM_API_KEY` (**optional**): fast, accurate speech in and out.
+  Sign up at <https://console.deepgram.com>; new accounts get free credit.
+
+`.env` is git-ignored; never commit it.
+
+### Local AI with Ollama
+
+The assistant's AI runs locally with [Ollama](https://ollama.com): free, no
+rate limits, and it works without internet once the model is downloaded.
+A graphics card with 8 GB of memory runs a 7–9B model comfortably.
+
+```powershell
+winget install Ollama.Ollama      # Windows; on macOS/Linux see ollama.com/download
+ollama pull qwen3:8b              # about 5 GB, once
 ```
 
-Try it without keys or a microphone first:
+Ollama runs in the background after install. `cooking-agent diagnose` checks
+it. To use another model: `ollama pull <model>` and set `OLLAMA_MODEL` in
+`.env`.
+
+While the assistant is running it keeps the model loaded, so the answer
+after a long simmer isn't a cold start: it pings the model every 15 minutes
+of quiet and again about a minute before each timer ends. The model's graphics
+memory (about 6 GB) stays in use until you quit the assistant; Ollama frees
+it 30 minutes later.
+
+### 3. Speech without Deepgram (optional, offline)
+
+Without a Deepgram key the voice mode uses free offline speech: Vosk to hear
+you and your computer's own voice (pyttsx3) to talk. Slower and less accurate,
+but no account needed.
 
 ```bash
-cooking-agent demo
+pip install -e ".[offline]"
 ```
 
-Then check your setup and talk to it:
+Then download and unzip a Vosk model, e.g.
+[vosk-model-small-en-us-0.15](https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip)
+(about 40 MB), and point `.env` at the unzipped folder:
 
-```bash
-cooking-agent diagnose
+```
+VOSK_MODEL_PATH=C:\Users\you\.cooking-agent\models\vosk-model-small-en-us-0.15
 ```
 
-```bash
-cooking-agent run
-```
+## Running it
+
+Go from simplest to full voice:
+
+| Step | Command | Needs | What you should see |
+|---|---|---|---|
+| 1 | `cooking-agent demo` | nothing | A scripted cooking session printed as `[you]` / `[assistant]` lines. Proves the install works. |
+| 2 | `cooking-agent diagnose` | `.env` | `[ok]` / `[FAIL]` for audio devices, mic level (speak when asked), speech in, speech out and the AI. Fix any `FAIL` before step 4. `--mic-seconds 0` skips the mic test. |
+| 3 | `cooking-agent chat` | Ollama + a model (or a Gemini key with `LLM_PROVIDER=gemini`) | Type to the real assistant. Try "find me a recipe for jeera rice for two", then "ready". Empty line quits. |
+| 4 | `cooking-agent run` | the AI as in step 3, plus a Deepgram key *or* the offline speech setup | Talk to it. Say "find me a recipe for fried rice". Ctrl+C quits. |
+
+The first time you use `chat` or `run`, it asks about allergies, health
+conditions and diet before anything else. Answer, or say "none" or "skip".
+
+Use headphones for `run` if you can: the assistant mutes the mic while it is
+speaking, and headphones keep it from hearing itself.
+
+### Troubleshooting
+
+* **`No matching distribution found for numpy...`**: your Python is older than
+  3.11. Install 3.11 or newer and recreate `.venv`.
+* **`cooking-agent` is not recognised**: the virtual environment is not active
+  (step 1), or `pip install -e .` was not run.
+* **`[FAIL] stt: VOSK_MODEL_PATH must point to...`**: no way to hear you yet.
+  Add `DEEPGRAM_API_KEY`, or do the offline setup (step 3).
+* **Replies take many seconds**: check your connection. Time to first word is
+  normally around a second; set `GEMINI_THINKING_LEVEL=low` in `.env` to speed
+  the AI up further.
+* **It answers itself or stops talking at random**: speaker sound is reaching
+  the mic. Use headphones, or start with `cooking-agent run --no-barge-in`.
+
+## All commands
 
 | Command | What it does |
 |---|---|
@@ -75,13 +157,47 @@ can be swapped by writing one adapter.
 | Role | Default | Offline fallback |
 |---|---|---|
 | Speech-to-text | Deepgram Nova-3, streaming WebSocket with endpointing | Vosk (`VOSK_MODEL_PATH`) |
-| LLM | Gemini (`google-genai`), streaming with function calling | none: an LLM key is required |
+| LLM | Local model through Ollama (`ollama`), streaming with tool calling | Gemini (`google-genai`) with `LLM_PROVIDER=gemini` |
 | Text-to-speech | Deepgram Aura-2, streaming WebSocket, kept open across turns | pyttsx3 (OS voice) |
 
 With `STT_PROVIDER=auto` / `TTS_PROVIDER=auto` (the default) Deepgram is used
 when `DEEPGRAM_API_KEY` is set and the offline providers otherwise. For the
 offline ones: `pip install -e ".[offline]"`. All settings are listed in
 [`.env.example`](.env.example).
+
+## Services and packages
+
+**Online services** (what is sent where):
+
+| Service | Used for | Sent | Needed? |
+|---|---|---|---|
+| Ollama (local, `http://localhost:11434`) | Understanding what you say, choosing actions, writing recipes (default) | Nothing leaves your computer | Yes, by default (or Gemini instead) |
+| Google Gemini API | Reading recipe photos/PDFs/recordings and transcribing videos when the key is set; the whole conversation with `LLM_PROVIDER=gemini` | The recipe file or transcript; with `LLM_PROVIDER=gemini` also the conversation, cooking state and your saved preferences | Optional |
+| Deepgram (`wss://api.deepgram.com`) | Live speech-to-text (Nova-3) and text-to-speech (Aura-2); transcribing recipe videos | Your microphone audio while listening; the assistant's replies as text | Recommended; offline fallback exists |
+| Recipe websites, YouTube, Instagram, TikTok, ... | Only when you run `recipes add <link>` | A normal page/caption request | Only for importing |
+
+Nothing else leaves your computer. The recipe book and your preferences are a
+local SQLite file (`~/.cooking-agent/recipes.db`).
+
+**Python packages** (pinned in `requirements.txt`):
+
+| Package | What it does here |
+|---|---|
+| `ollama` | Talks to the local Ollama server: streaming replies, tool calls, structured recipe output |
+| `google-genai` | Google's official SDK for Gemini (optional provider and recipe import) |
+| `websockets` | Talks to Deepgram's streaming speech APIs directly |
+| `pydantic` | Defines and validates the recipe format and every tool's arguments, so a malformed AI reply is caught |
+| `numpy` | Audio maths: loudness (for barge-in), resampling, the test tones |
+| `sounddevice` | Microphone input and speaker output (PortAudio, bundled on Windows/macOS) |
+| `python-dotenv` | Loads `.env` into settings |
+| `yt-dlp` | Reads captions/subtitles from video sites and downloads just the audio when the recipe is only spoken |
+| `vosk` *(offline extra)* | Offline speech-to-text |
+| `pyttsx3` *(offline extra)* | Offline text-to-speech using your OS's voice |
+| `pytest`, `pytest-asyncio` *(dev)* | Test suite |
+
+Built-in Python modules do the rest: `asyncio` (everything runs on one event
+loop), `sqlite3` (recipe book), `urllib` (fetching recipe pages), `argparse`
+(the CLI).
 
 ## What it can do (LLM tools)
 
@@ -93,6 +209,8 @@ offline ones: `pip install -e ".[offline]"`. All settings are listed in
 | `list_ingredients` | "What do I need?" |
 | `scale_servings` | "Make it for six people." |
 | `substitute_ingredient` | "I don't have ghee, what can I use?" |
+| `change_recipe` | Mid-recipe: "Skip the cashews." "Add some peas." "Make it less spicy." "Double the garlic." "Fry it for 5 minutes instead." (the current step is kept; when a step mentions something you took out or swapped, the app adds "Leave out the cashews." or "Use butter instead of ghee." as it reads it; "could I leave out the garlic?" is answered, not acted on; an ingredient that matches more than one line ("the rice") gets "Which one?") |
+| *(no tool)* | Questions about the dish, answered from the recipe you're cooking: "How do I know the rice is done?" "Why do we soak it?" "Can I use brown rice?" |
 | `set_timer` / `cancel_timer` / `list_timers` | "Set a rice timer for 12 minutes." "How long is left?" "Stop the pasta timer." |
 | `list_saved_recipes` / `save_recipe` | "What recipes do I have?" "Save this one." |
 | `start_recipe_dictation` and friends | "I want to save my own recipe, Mum's dal, serves four." |
@@ -206,11 +324,51 @@ LLM with each turn and each new recipe:
 * **What you tell it**, kept until you say otherwise: allergies, health
   conditions and intolerances, diet, dislikes, likes, what you usually have at
   home. "I'm lactose intolerant." "I'm allergic to cashews." "I'm vegetarian."
-  "I always have paneer and ghee." "Forget that I don't like mushrooms."
+  "I always have paneer and ghee." "Forget that I don't like mushrooms." A diet
+  you mention about yourself in passing ("honestly I'm vegetarian, but eggs
+  are okay", "we're vegan") is saved straight away by the app itself, and the
+  newest one replaces an older one.
 * **What it learns**, from what you actually do: a diet you've asked for in
   most recent requests (at least 3 times), how many people you usually cook for
-  (used when you don't say), and ingredients that appear in at least two
-  recipes you actually started cooking.
+  (used when you don't say), ingredients that appear in at least two
+  recipes you actually started cooking, and **the changes you keep making**:
+  swaps ("butter instead of ghee"), things you leave out or add, more or less
+  of something. Every change is saved straight away; it becomes a habit once
+  you've made it in two different recipes ("onions", "onion" and "red onion"
+  count as the same thing), so a one-off "no cashews today" doesn't change
+  future recipes, and taking something out and putting it back in the same
+  recipe cancels out. If two habits contradict, the latest wins. "Forget that
+  I swap ghee for butter" drops one habit; `prefs forget-history` drops all.
+
+When a new recipe is written, the app itself makes your usual changes to it
+(swaps, things left out, more or less of something) and the assistant only
+mentions the ones it actually made. For a recipe from your own book, it
+offers them instead and only makes them if you say yes. A learned habit is
+never applied if it clashes with an allergy, condition or stated diet, and a
+learned "more" isn't applied to something a condition limits (more salt with
+high blood pressure, more sugar with diabetes). A diet it has only learned (you
+usually ask for vegetarian but never said so) gives a heads-up if a recipe
+breaks it ("this has chicken, and you usually cook vegetarian") but never
+forces a rewrite; only a diet you've stated does that.
+
+A habit isn't applied to a dish built around that ingredient. If you usually
+leave out cashews and ask for a kaju curry, the cashews stay, and the app
+says so and offers better options: "Kaju Curry is built around cashews, so I
+kept them in, though you usually leave them out. You could use coconut milk
+instead, or make coconut curry. I'd go with coconut milk. Shall I, or keep the
+cashews?" Answer "yes" (its pick), "keep them", "leave them out", "the other
+one", or name an option ("coconut milk", "make the coconut curry"); anything
+else, like "I don't have coconut milk" or a question about an option, goes to
+the assistant, and after a question the app asks again. Taking its
+suggestion isn't learned as a new habit. The options are written by the model
+and checked against your allergies, conditions, diet, dislikes and other
+habits. A usual swap works
+the same way: for ghee rice it asks "Shall I use butter anyway, or keep the
+ghee?". The dish name is checked in English and in common Indian names (kaju,
+aloo, palak, gobi, jeera, murgh, and so on), and the recipe writer is told
+what those words mean, because it once wrote a kaju curry with almonds. Only
+the dish name counts: "pulao with cashews" isn't a cashew dish, and "more" or
+"less" habits still apply.
 
 New recipes are written to fit: allergies are always excluded, health
 conditions are turned into concrete cooking rules (lactose intolerance: no
@@ -221,18 +379,28 @@ are left out, and ingredients you usually have are preferred, unless they
 clash with an allergy or condition. What you ask for in the moment wins for
 diet and taste ("chicken biryani, just this once"), never for allergies or
 conditions. When it applied something it learned rather than something you
-said, it tells you.
+said, it tells you (only what it actually changed).
 
 **Safety check.** Every recipe's ingredients are also checked in code against
 your allergies and conditions, with common families (tree nuts, shellfish,
 dairy, gluten...) and look-alikes that are fine (coconut milk, rice flour,
-nutmeg, eggplant):
+nutmeg, eggplant). A "nuts" allergy covers peanuts too (peanut oil, groundnuts,
+peanut butter); "tree nuts" covers tree nuts only. Vegetarian, eggetarian, eggless, vegan and Jain diets are
+checked the same way (vegetarian: no meat, fish, eggs, gelatin or meat stock;
+eggetarian: vegetarian but eggs are fine, also understood as "vegetarian but I
+eat eggs", "eggitarian" or "I eat eggs but no meat"; eggless: no eggs; vegan:
+also no dairy, ghee or honey; Jain: vegetarian, no honey, no onion, garlic,
+potato, ginger or other root vegetables), both when they're saved in your profile and when
+you ask for one just this once ("vegan kheer"). For a diet, a request that
+names the ingredient itself wins ("chicken biryani, just this once");
+allergies and conditions are never overridden.
 
 * a generated recipe that still contains something you can't have is sent back
   once to be rewritten; if it still conflicts, you get a spoken warning;
 * recipes from your own book are never changed, but you're warned ("Heads up:
   this has milk, which conflicts with lactose intolerance");
-* a substitution into something you can't have is flagged.
+* a substitution, or an ingredient added or increased mid-recipe, into
+  something you can't have is flagged.
 
 This is a helper, not a medical guarantee: word matching can't see hidden
 ingredients in branded products, and the guidance for conditions like
@@ -279,6 +447,62 @@ fake providers in under a second; it is what the test suite uses.
 The fixtures are synthetic (espeak-ng, regenerate with `bench/make_fixtures.sh`).
 Real recordings in your own kitchen are a better test: add 16-bit mono WAVs to
 the folder and entries to `manifest.json`.
+
+Many fixtures are everyday commands that the app answers itself without the
+LLM (instant commands). To measure the **model**, add `--no-instant` (every
+fixture goes to the LLM) and `--text-stt` (feed each fixture's text instead of
+recognising its audio, so speech-recognition errors don't blur the result).
+
+### Diet test
+
+`cooking-agent diet-eval` asks the LLM for ten recipes where the rule must
+hold but the dish name doesn't give it away (vegetarian pad thai, caesar salad
+and ramen; vegan kheer and chocolate cake; Jain dal tadka and pav bhaji;
+lactose-intolerant paneer butter masala; celiac pasta; peanut-allergy satay).
+Each goes through the normal path (profile in the prompt, the code check, one
+rewrite if needed) and passes if no conflict is left. `--out FILE` keeps the
+recipes for reading.
+
+### Understanding test
+
+`cooking-agent understanding-eval` checks what the assistant does with 28
+things a cook might say on step 2 of a pulao or a tomato spaghetti, right
+after "Are you ready for the next step?": questions about the dish ("would
+brown rice work here?", "could I leave out the garlic?"), changes ("drop the
+cashews", "can you make it milder", "use half a cup less water"), loose
+commands ("alright, the cashews look golden", "we're cooking for four now")
+and chit-chat. A question must get a spoken answer (not silence or an error
+message) with the step and recipe untouched; a change must really change the
+recipe, including what the steps will say, without moving the step; a tool
+that returned an error doesn't count. It exits with an error below 90%
+(`--min-accuracy`). Each case runs 3 times
+(`--runs`), with instant commands on as in real use, on a throwaway recipe
+book and profile. `--out FILE` keeps every reply.
+
+### Choosing the local model
+
+Measured 2026-11-16 on an RTX 4060 Laptop GPU (8 GB), Ollama 0.40.16, one
+model loaded at a time, all on the GPU, `bench --text-stt --no-instant
+--runs 3`, `diet-eval` and `understanding-eval --runs 3`.
+
+`qwen3:8b` (the default) after the Phase 2 review fixes: **tool routing 100%**
+(30/30), **understanding test 95%** (80/84 over the 28 cases), **diet test
+10/10** (2 rewrites), LLM first token p50 / p90 1.1 s / 2.0 s.
+
+The model choice, before the review fixes (20-case understanding test):
+
+| Model | Tool routing | Understanding test | LLM first token p50 / p90 | Diet test |
+|---|---|---|---|---|
+| **`qwen3:8b`** | **97%** | **100%** (60/60) | 1.0 s / 1.7 s | **10/10** (1 rewrite) |
+| `gemma4:e4b` | 67% (answered in words instead of calling `get_recipe`, `next_step`, `substitute_ingredient`, `set_timer` in 10 of 30 turns) | 98% (one "milder" call had a bad argument) | **0.7 s** / 2.4 s | 9/10 (left a "Worcestershire sauce substitute" in a vegetarian caesar salad) |
+
+Phase 1 (first prompt, same benchmark): `qwen3:8b` 90% routing, 10/10 diets;
+`llama3.1:8b` 90%, 1.5 s first token, 10/10; `mistral:7b` 10% (almost never
+calls tools).
+
+`qwen3:8b` stays the default: Gemma 4 is a bit faster to start talking but
+misses a third of the tool calls, which is what moves the recipe and timers.
+Everyday commands don't depend on the model at all (instant commands).
 
 ## Barge-in and echo
 

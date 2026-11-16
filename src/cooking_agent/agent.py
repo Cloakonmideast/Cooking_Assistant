@@ -30,10 +30,12 @@ from dataclasses import dataclass, field
 from typing import AsyncIterator, Callable, Optional
 
 from .audio import AudioSink, MicGate
+from .commands import match_command, speak_result
 from .metrics import MetricsSink, TurnMetrics, now
 from .providers.base import (
     LLMProvider,
     Message,
+    ToolCall,
     STTProvider,
     SttEvent,
     TextDelta,
@@ -42,10 +44,10 @@ from .providers.base import (
     TTSProvider,
     TurnComplete,
 )
-from .preferences import PreferenceStore
+from .preferences import PreferenceStore, stated_diets
 from .recipe_store import RecipeStore
 from .segmenter import SentenceSegmenter
-from .state import CookingSession, TurnState, TurnStateMachine
+from .state import Awaiting, CookingSession, TurnState, TurnStateMachine
 from .timers import TimerManager
 from .tools import STEP_TOOLS, ToolBox
 
@@ -67,7 +69,9 @@ itself asks "Are you ready for the next step?" right after your reply.
 - When listing ingredients, read at most six at a time and offer the rest.
 
 Steps and timers:
-- The cook moves on only when they say so. Never call next_step on your own.
+- The cook moves on only when they say so. Never call next_step on your own. \
+When they say they've finished the step or ask what's next, that is saying \
+so: call next_step.
 - awaiting_answer_to in the state says which question the app just asked. \
 If it is start_timer and the cook agrees ("yes", "sure", "go ahead"), call \
 start_step_timer. If it is next_step and the cook agrees ("yes", "ready", \
@@ -76,6 +80,24 @@ problem, take your time.") and call nothing.
 - For a timer with a different length than the step's, use set_timer.
 - "Stop" or "cancel" about a timer means cancel_timer, never end_session. \
 Only call end_session if the cook clearly wants to quit the assistant.
+
+During a recipe:
+- recipe_text in the state is the recipe as the cook has it now, with \
+[current step] marked. Never read a step out of it yourself: steps are only \
+read by calling next_step, previous_step or repeat_step, so the app knows \
+where the cook is. Answer questions about the dish ("is the oil hot \
+enough?", "why rest the dough?", "how thick should the sauce be?") from it \
+in one or two sentences, calling no tool, and stay on the same step.
+- When the cook asks to change the recipe (leave something out, add \
+something, more or less of something, do a step differently), call \
+change_recipe; to swap one ingredient for another, call \
+substitute_ingredient. "Make it less spicy" means change_recipe with \
+action "change_amount" and amount "less" on the hot ingredient. Only change it when they ask for a change, not when \
+they ask whether they could.
+- The app itself tells the cook to leave out a removed ingredient, or use \
+the substitute, whenever a step mentions it, so don't rewrite steps for \
+that. Confirm the change in one sentence.
+- A change never moves the step: do not call next_step after it.
 
 Recipes:
 - get_recipe checks the cook's saved recipe book first, then writes a new \
@@ -116,6 +138,9 @@ About the cook:
 from what they cook. Use it when suggesting dishes. get_recipe already \
 tailors new recipes to it; if the result has tailored_to or servings_note, \
 mention it in a few words (e.g. "I kept it vegetarian like you usually do.").
+- If get_recipe returns your_usual_changes (a recipe from their book), \
+offer them in one sentence ("You usually swap ghee for butter, shall I?") \
+and make them only if the cook agrees.
 - When the cook states a lasting preference ("I'm vegetarian", "I'm allergic \
 to nuts", "I don't like coriander", "I always have paneer at home"), call \
 remember_preference. A one-off ("no onions today") is a get_recipe \
@@ -140,7 +165,12 @@ SETUP_QUESTION = (
     "like vegetarian or vegan? If not, just say none."
 )
 INTERRUPTED_NOTE = "[The user interrupted your previous reply while it was being spoken.]"
+LLM_UNAVAILABLE = ("I can't reach the AI model right now. I can still go to the next step, repeat it, "
+                   "set timers, and cook recipes from your recipe book.")
+SETUP_LATER = "You can finish setup later by typing cooking-agent setup."
+NOT_CAUGHT = "Sorry, I didn't catch that. Could you say it another way?"
 MAX_TOOL_ROUNDS = 4
+QUESTION_FRESH_S = 60.0  # a bare "yes" answers the app's question only this soon after it was heard
 MAX_HISTORY_MESSAGES = 40
 
 
@@ -152,6 +182,26 @@ class AgentConfig:
     barge_in_threshold_dbfs: float = -35.0
     barge_in_ratio: float = 1.5
     echo_tail_ms: int = 250
+    instant_commands: bool = True  # handle everyday commands without the LLM (commands.py)
+    # Keep a local model loaded (llm.warmup): every this many seconds, and once
+    # this long before each timer ends, so the answer after a long simmer isn't
+    # a cold load. 0 turns it off.
+    keep_warm_every_s: float = 900.0
+    keep_warm_before_timer_s: float = 60.0
+    keep_warm_poll_s: float = 5.0
+
+
+def keep_warm_due(now: float, last_ping: float, deadlines: dict[str, float], pinged: set[tuple[str, float]],
+                  every_s: float, before_s: float) -> tuple[bool, set[tuple[str, float]]]:
+    """Whether to ping the model now, and the timers this ping covers.
+
+    Due when ``every_s`` has passed since the model was last used or pinged,
+    or when a running timer ends within ``before_s`` and hasn't had its ping
+    yet. Timers are keyed by (name, deadline), so a timer set again under the
+    same name gets a new ping.
+    """
+    keys = {(name, end) for name, end in deadlines.items() if end - now <= before_s and (name, end) not in pinged}
+    return (now - last_ping >= every_s or bool(keys)), keys
 
 
 @dataclass
@@ -191,13 +241,20 @@ class CookingAgent:
         self._turn_counter = 0
         self._last_spoke_at = 0.0
         self._interrupted_last_turn = False
+        # True only while the app's own question was the last thing asked, so a
+        # bare "yes"/"no" can be answered instantly; any other turn clears it.
+        self._question_fresh = False
+        self._question_pending = False  # asked this turn; becomes fresh once the whole reply was heard
+        self._setup_fresh = False  # same, for the first-run allergies/diet question
         self._stopped = asyncio.Event()
+        self._last_llm_use = self.timers.now()  # for keep_warm: a real turn also keeps the model loaded
 
     # ================================================================ running
     async def run(self, frames: AsyncIterator[bytes],
                   speech_end_fn: Callable[[SttEvent], Optional[float]] | None = None) -> None:
         """Run until the STT stream ends or the user ends the session."""
         announcer = asyncio.create_task(self._announcer(), name="announcer")
+        warm = asyncio.create_task(self.keep_warm(), name="keep-warm")
         stt_iter = self.stt.stream(self.gate.process(frames))
         stop_wait = asyncio.create_task(self._stopped.wait())
         try:
@@ -224,13 +281,43 @@ class CookingAgent:
             stop_wait.cancel()
             await self._cancel_output()
             announcer.cancel()
+            warm.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await announcer
+            with contextlib.suppress(asyncio.CancelledError):
+                await warm
             await self.timers.aclose()
             with contextlib.suppress(Exception):
                 await stt_iter.aclose()
             if self.turn.state != TurnState.STOPPED:
                 self.turn.to(TurnState.STOPPED)
+
+    async def keep_warm(self) -> None:
+        """Ping the model so Ollama doesn't unload it during a long simmer
+        (see ``keep_warm_due``). Failures are logged, never spoken. Returns at
+        once if the LLM has no ``warmup`` or the interval is 0."""
+        warmup = getattr(self.llm, "warmup", None)
+        every = self.config.keep_warm_every_s
+        if warmup is None or every <= 0:
+            return
+        last_ping = self.timers.now()
+        pinged: set[tuple[str, float]] = set()
+        while True:
+            await asyncio.sleep(self.config.keep_warm_poll_s)
+            now = self.timers.now()
+            deadlines = self.timers.deadlines()
+            pinged &= set(deadlines.items())  # forget timers that ended or were cancelled
+            due, keys = keep_warm_due(now, max(last_ping, self._last_llm_use), deadlines, pinged, every,
+                                      self.config.keep_warm_before_timer_s)
+            pinged |= keys
+            if not due:
+                continue
+            last_ping = now
+            try:
+                await warmup()
+                log.debug("keep-warm ping (%s)", ", ".join(n for n, _ in keys) or "interval")
+            except Exception as e:  # Ollama stopped, etc.: the next real turn says so
+                log.warning("keep-warm ping failed: %s: %s", type(e).__name__, e)
 
     def begin_setup(self) -> bool:
         """First run: ask about allergies, conditions and diet. Spoken as soon
@@ -238,6 +325,7 @@ class CookingAgent:
         if self.tools.prefs is None:
             return False
         self.session.setup_pending = True
+        self._setup_fresh = True
         self._announcements.put_nowait(SETUP_QUESTION)
         return True
 
@@ -270,7 +358,8 @@ class CookingAgent:
         # tell it so on the next turn (provider-neutral; no history rewriting).
         llm_text = f"{INTERRUPTED_NOTE} {accepted}" if self._interrupted_last_turn else accepted
         self._interrupted_last_turn = False
-        out.task = asyncio.create_task(self._run_turn(llm_text, out), name=f"turn-{m.turn_id}")
+        # Commands are matched on the words as spoken, without the note above.
+        out.task = asyncio.create_task(self._run_turn(llm_text, out, raw=accepted), name=f"turn-{m.turn_id}")
         self._output = out
         return out.task
 
@@ -337,12 +426,14 @@ class CookingAgent:
             out = self._output
             if out and out.accepting and out.task and not out.task.done():
                 out.queue.put_nowait(text)
+                self._question_pending = False  # the question is no longer the last thing heard
                 continue
             new = _Output()
             new.task = asyncio.create_task(self._speak_only(text, new), name="announcement")
             self._output = new
 
     async def _speak_only(self, text: str, out: _Output) -> None:
+        self._question_fresh = False  # an announcement now comes after the app's question
         self.on_text("assistant", text)
         out.queue.put_nowait(text)
         out.queue.put_nowait(_END)
@@ -355,13 +446,15 @@ class CookingAgent:
                     self.turn.to(TurnState.LISTENING)
 
     # ================================================================ turn
-    async def _run_turn(self, user_text: str, out: _Output) -> None:
+    async def _run_turn(self, user_text: str, out: _Output, raw: Optional[str] = None) -> None:
         m = out.metrics
         assert m is not None
-        producer = asyncio.create_task(self._think(user_text, out), name=f"llm-{m.turn_id}")
+        producer = asyncio.create_task(self._think(user_text, out, raw), name=f"llm-{m.turn_id}")
         try:
             await self._play(out)
             await producer  # surface LLM/tool errors
+            # The reply, including any question at its end, was heard in full.
+            self._question_fresh = self._question_pending
         except asyncio.CancelledError:
             producer.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -399,70 +492,45 @@ class CookingAgent:
             state["cook_profile"] = self.tools.prefs.profile()
         return SYSTEM_PROMPT.format(state=json.dumps(state))
 
-    async def _think(self, user_text: str, out: _Output) -> None:
-        """LLM producer: stream model rounds, run tool calls, push speakable segments."""
+    async def _think(self, user_text: str, out: _Output, raw: Optional[str] = None) -> None:
+        """Producer for one turn: an instant command if the words are one,
+        otherwise stream model rounds and run tool calls; push speakable segments."""
         m = out.metrics
         assert m is not None
         q = out.queue
+        raw = user_text if raw is None else raw
+        self.tools.utterance = raw
+        if self.tools.prefs is not None and (diets := stated_diets(raw)):
+            self.tools.prefs.set_stated_diets(diets)  # "I'm vegetarian": saved whatever the model does
         committed: list[Message] = [Message("user", user_text)]
         spoken: list[str] = []
-        all_results: list[ToolResult] = []
-        gave_up = False
 
         def emit(seg: str) -> None:
             spoken.append(seg)
             q.put_nowait(seg)
 
+        # A question the app asked counts as "just asked" for this turn only.
+        heard_recently = time.perf_counter() - self._last_spoke_at <= QUESTION_FRESH_S
+        question_fresh, setup_fresh = self._question_fresh and heard_recently, self._setup_fresh
+        self._question_fresh = self._setup_fresh = self._question_pending = False
+        match = None
+        if self.config.instant_commands:
+            match = match_command(raw, self.session, self.tools.store, self.timers.active_names,
+                                  self.session.awaiting if question_fresh else None,
+                                  setup_open=setup_fresh and self.session.setup_pending)
         try:
-            for _ in range(MAX_TOOL_ROUNDS):
-                m.llm_rounds += 1
-                seg = SentenceSegmenter()
-                calls = []
-                reply: Optional[Message] = None
-                async for ev in self.llm.stream(self._system_prompt(), self.history + committed, self.tools.specs()):
-                    m.mark_llm_event()
-                    if isinstance(ev, TextDelta):
-                        for s in seg.push(ev.text):
-                            emit(s)
-                    elif isinstance(ev, ToolCallEvent):
-                        calls.append(ev.call)
-                        for s in seg.flush():  # speak what came before the tool call now
-                            emit(s)
-                    elif isinstance(ev, TurnComplete):
-                        reply = ev.message
-                for s in seg.flush():
-                    emit(s)
-                if reply is None:
-                    raise RuntimeError("LLM stream ended without TurnComplete")
-                if reply.text:
-                    self.on_text("assistant", reply.text)
-                if not calls:
-                    committed.append(reply)
-                    break
-                if any(c.name == "get_recipe" for c in calls) and not spoken:
-                    emit(FILLER_GET_RECIPE)
-                    m.first_audio_was_filler = True  # refined in _play if audio came earlier
-                results = []
-                for c in calls:  # sequential on purpose: order matters (e.g. next_step twice)
-                    m.tool_calls.append(c.name)
-                    results.append(await self.tools.dispatch(c))
-                all_results += results
-                committed.append(reply)
-                committed.append(Message("tool", tool_results=results))
-                step_text = self._step_speech(results)
-                if step_text is not None:
-                    # Read the step ourselves, word for word, instead of asking
-                    # the model to: exact wording and one LLM round fewer.
-                    emit(step_text)
-                    self.on_text("assistant", step_text)
-                    committed.append(Message("assistant", step_text))
-                    break
+            if match is not None:
+                committed = [Message("user", raw)]
+                await self._instant(match, committed, spoken, emit, m)
             else:
-                gave_up = True
-                emit("Sorry, I got stuck on that one. Could you say it another way?")
-                committed.append(Message("assistant", "(gave up after too many tool calls)"))
-            if not gave_up:
-                self._ask_follow_up(all_results, committed, spoken, emit)
+                try:
+                    await self._llm_rounds(committed, spoken, emit, m)
+                except Exception:
+                    log.exception("LLM turn failed")
+                    msg = LLM_UNAVAILABLE + (f" {SETUP_LATER}" if self.session.setup_pending else "")
+                    emit(msg)
+                    self.on_text("assistant", msg)
+                    committed = [committed[0], Message("assistant", msg)]  # drop any half-finished round
         except asyncio.CancelledError:
             self._commit_interrupted(committed, spoken)
             raise
@@ -470,6 +538,131 @@ class CookingAgent:
             self._commit(committed)
         finally:
             q.put_nowait(_END)
+
+    async def _instant(self, match, committed: list[Message], spoken: list[str],
+                       emit: Callable[[str], None], m: TurnMetrics) -> None:
+        """Run an instant command's tools and speak a fixed reply; no LLM.
+
+        Recorded in the history as plain text, valid for every provider; or,
+        for an LLM with ``tool_history`` (Ollama), shaped as if the model had
+        called the tool itself. A local model copies the history's pattern:
+        with "next" -> "Step 1. ..." as plain text, qwen3 began writing
+        "next_step" as words instead of calling it."""
+        results: list[ToolResult] = []
+        calls = [ToolCall(c.name, c.args, id=f"instant-{self._turn_counter}-{i}") for i, c in enumerate(match.calls)]
+        for c in calls:
+            m.tool_calls.append(c.name)
+            results.append(await self.tools.dispatch(c))
+        text = self._step_speech(results) or speak_result(results) or match.reply or ""
+        if text:
+            emit(text)
+            self.on_text("assistant", text)
+        if calls and getattr(self.llm, "tool_history", False):
+            committed.append(Message("assistant", "", calls))
+            committed.append(Message("tool", tool_results=results))
+        committed.append(Message("assistant", text))
+        if match.keep_open:
+            self._question_pending = True  # "hold on": the same question is still open
+        else:
+            self._ask_follow_up(results, committed, spoken, emit)
+
+    async def _llm_rounds(self, committed: list[Message], spoken: list[str], emit: Callable[[str], None],
+                          m: TurnMetrics) -> None:
+        """Stream model rounds, run tool calls, and append the turn to ``committed``."""
+        all_results: list[ToolResult] = []
+        retried_empty = False
+        for _ in range(MAX_TOOL_ROUNDS):
+            m.llm_rounds += 1
+            self._last_llm_use = self.timers.now()
+            seg = SentenceSegmenter()
+            calls = []
+            reply: Optional[Message] = None
+            async for ev in self.llm.stream(self._system_prompt(), self.history + committed,
+                                          self.tools.specs_for(self.session)):
+                m.mark_llm_event()
+                if isinstance(ev, TextDelta):
+                    for s in seg.push(ev.text):
+                        emit(s)
+                elif isinstance(ev, ToolCallEvent):
+                    calls.append(ev.call)
+                    for s in seg.flush():  # speak what came before the tool call now
+                        emit(s)
+                elif isinstance(ev, TurnComplete):
+                    reply = ev.message
+            for s in seg.flush():
+                emit(s)
+            if reply is None:
+                raise RuntimeError("LLM stream ended without TurnComplete")
+            if reply.text:
+                self.on_text("assistant", reply.text)
+            if not calls and not reply.text.strip() and not all_results:
+                # Nothing at all: Ollama drops a call to a tool that doesn't exist (qwen3 tried
+                # "change_amount"), which left the cook in silence. Ask once more, then say so.
+                if not retried_empty:
+                    retried_empty = True
+                    log.warning("empty reply from the model; asking again")
+                    continue
+                emit(NOT_CAUGHT)
+                self.on_text("assistant", NOT_CAUGHT)
+                committed.append(Message("assistant", NOT_CAUGHT))
+                break
+            if not calls:
+                committed.append(reply)
+                break
+            if any(c.name == "get_recipe" for c in calls) and not spoken:
+                emit(FILLER_GET_RECIPE)
+                m.first_audio_was_filler = True  # refined in _play if audio came earlier
+            results = []
+            for c in calls:  # sequential on purpose: order matters (e.g. next_step twice)
+                m.tool_calls.append(c.name)
+                results.append(await self.tools.dispatch(c))
+            all_results += results
+            committed.append(reply)
+            committed.append(Message("tool", tool_results=results))
+            step_text = (self._step_speech(results) or self._amount_speech(calls, results)
+                         or self._dish_choice_speech(results))
+            if step_text is not None:
+                # Read the step ourselves, word for word, instead of asking
+                # the model to: exact wording and one LLM round fewer.
+                emit(step_text)
+                self.on_text("assistant", step_text)
+                committed.append(Message("assistant", step_text))
+                break
+        else:
+            emit("Sorry, I got stuck on that one. Could you say it another way?")
+            committed.append(Message("assistant", "(gave up after too many tool calls)"))
+            return
+        self._ask_follow_up(all_results, committed, spoken, emit)
+
+    @staticmethod
+    def _amount_speech(calls: list[ToolCall], results: list[ToolResult]) -> Optional[str]:
+        """'Okay, now 1 and 1/2 cups basmati rice.' when every call this round was
+        a successful amount change: read by the app, because qwen3 misread the
+        new amount ("adjusted the rice to 1 cup" for 1 1/2 cups)."""
+        if not results or not all(c.name == "change_recipe" and (c.args or {}).get("action") == "change_amount"
+                                  for c in calls):
+            return None
+        if any("line" not in r.result or r.result.get("warnings") for r in results):
+            return None  # a warning must be said: leave it to the model
+        return " ".join(f"Okay, now {r.result['line']}." for r in results)
+
+    def _dish_choice_speech(self, results: list[ToolResult]) -> Optional[str]:
+        """"Here's Kaju Curry for 2." when a new recipe is built around something
+        the cook usually leaves out: the app asks about it next, and the model,
+        left to describe the recipe, talked about it wrongly ("I kept the
+        cashews as you usually include them"). A warning is left to the model."""
+        choice = self.session.dish_choice
+        if choice is None or len(results) != 1 or results[0].name != "get_recipe":
+            return None
+        res = results[0].result
+        if "built_around" not in res or res.get("warnings"):
+            return None
+        tailored = [t.replace(" (", ", ").replace(")", "") for t in res.get("tailored_to", [])]
+        made = f" Tailored to you: {'; '.join(tailored)}." if tailored else ""
+        # a recipe-book recipe's usual changes, said rather than asked: the app's question comes next (A11)
+        usual = res.get("your_usual_changes") or []
+        offer = f" You usually {'; '.join(usual)}; say if you'd like that." if usual else ""
+        return f"Here's {choice['name']} for {res['servings']}.{made}{offer}"
 
     @staticmethod
     def _step_speech(results: list[ToolResult]) -> Optional[str]:
@@ -486,13 +679,20 @@ class CookingAgent:
         """Append the app's own question after a step ("start a timer?" /
         "ready for the next step?"). Done here rather than left to the model
         so the cook is asked every time, in the same words."""
+        model_asked = " ".join(spoken).rstrip().endswith("?")
         question = self.tools.follow_up(results)
+        if model_asked and question is None and not any(r.name in STEP_TOOLS for r in results):
+            # The model asked its own question ("want me to take it out?") and the app had
+            # nothing to ask: a "yes" now answers that, not the earlier "ready for the next step?".
+            self.session.awaiting = None
+            return
         if not question:
             return
-        if " ".join(spoken).rstrip().endswith("?"):
+        if model_asked and self.session.awaiting is not Awaiting.DISH_CHOICE:
             return  # the model already ended on a question; don't stack a second one
         emit(question)
         self.on_text("assistant", question)
+        self._question_pending = True  # once heard in full, a bare "yes"/"no" answers this
         last = committed[-1]  # the final reply of the turn, text only
         committed[-1] = Message("assistant", f"{last.text} {question}".strip())
 

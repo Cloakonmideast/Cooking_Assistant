@@ -34,8 +34,10 @@ _GLUTEN_FREE = ["rice", "gram", "chickpea", "corn", "maize", "almond", "coconut"
 
 # allergy word -> ingredient words it covers
 ALLERGEN_FAMILIES: dict[str, list[str]] = {
+    # "nuts" covers peanuts too (most cooks who say "nuts" mean them); "tree nuts" doesn't
     "nut": ["almond", "cashew", "walnut", "pistachio", "pecan", "hazelnut", "macadamia", "brazil nut",
-            "pine nut", "chironji", "praline", "marzipan", "nut"],
+            "pine nut", "chironji", "praline", "marzipan", "nut",
+            "peanut", "groundnut", "monkey nut", "peanut butter"],
     "tree nut": ["almond", "cashew", "walnut", "pistachio", "pecan", "hazelnut", "macadamia", "brazil nut",
                  "pine nut", "chironji", "praline", "marzipan"],
     "peanut": ["peanut", "groundnut", "monkey nut", "peanut butter"],
@@ -81,6 +83,68 @@ CONDITIONS: dict[str, tuple[list[str], list[str], str]] = {
 }
 
 
+# ------------------------------------------------------------------ diets
+_MEAT = ["chicken", "mutton", "lamb", "beef", "pork", "bacon", "ham", "sausage", "salami", "pepperoni", "goat",
+         "turkey", "duck", "veal", "venison", "meat", "keema", "mince", "prosciutto", "chorizo", "lard", "gelatin",
+         "gelatine", "bone broth", "bone marrow", "chicken stock", "chicken broth", "beef stock", "beef broth",
+         "meat stock", "fish stock"]
+_SEAFOOD = ["fish", "anchovy", "anchovies", "salmon", "tuna", "cod", "sardine", "mackerel", "prawn", "shrimp",
+            "crab", "lobster", "squid", "octopus", "clam", "mussel", "oyster", "scallop", "fish sauce",
+            "oyster sauce", "bonito", "pomfret", "hilsa", "surimi", "worcestershire"]
+_EGGS = ["egg", "mayonnaise", "mayo", "meringue", "albumen"]
+_VEG_OK = ["eggplant", "eggless", "egg-free", "egg free", "vegan", "vegetarian", "plant-based", "plant based",
+           "vegetable stock", "vegetable broth", "veg stock", "mushroom stock", "mock", "soy", "soya", "tofu",
+           "jackfruit"]
+_ROOTS = ["onion", "garlic", "potato", "carrot", "beetroot", "beet", "radish", "ginger", "turnip", "sweet potato",
+          "yam", "leek", "shallot", "spring onion", "scallion", "mooli", "arbi", "colocasia"]
+
+_VEGETARIAN_PART = (_MEAT + _SEAFOOD + _EGGS, _VEG_OK)
+# diet -> (rule parts, each (words to flag, look-alikes that are fine for that part), guidance for the writer).
+# Parts keep exemptions separate: "rice" excuses "rice milk" from the dairy part, never "chicken fried rice".
+DIETS: dict[str, tuple[list[tuple[list[str], list[str]]], str]] = {
+    "vegetarian": ([_VEGETARIAN_PART],
+                   "no meat, poultry, fish, seafood, eggs, gelatin, or meat or fish stock"),
+    "vegan": ([_VEGETARIAN_PART, (_DAIRY + ["ghee"], _PLANT_DAIRY), (["honey"], [])],
+              "no meat, fish, eggs, dairy (milk, butter, ghee, paneer, cheese, cream, yogurt) or honey; "
+              "plant milks and oils are fine"),
+    "eggetarian": ([(_MEAT + _SEAFOOD, _VEG_OK)],
+                   "vegetarian but eggs are fine: no meat, poultry, fish, seafood, gelatin, or meat or fish stock"),
+    "eggless": ([(_EGGS, ["eggplant", "eggless", "egg-free", "egg free", "vegan", "plant-based", "plant based"])],
+                "no eggs or anything made with them (mayonnaise, meringue)"),
+    "jain": ([_VEGETARIAN_PART, (["honey"], []), (_ROOTS, ["dry ginger", "sonth"])],
+             "vegetarian with no eggs or honey, and no onion, garlic, potato, carrot, ginger or other root "
+             "vegetables (dry ginger powder is fine)"),
+}
+
+
+_NEGATION_BEFORE = re.compile(r"(?<![a-z])(?:no|without|not|zero|skip|minus|less|hold the|avoid)\s+(?:any\s+|the\s+)?$")
+_FREE_AFTER = re.compile(r"^(?:e?s)?[\s-]?free(?![a-z])")
+
+
+def requested_words(request: str, diets: Iterable[str]) -> set[str]:
+    """Words a diet forbids that the cook asked for by name ("palak paneer",
+    "chicken biryani"), not counting ones they ruled out ("no onion",
+    "garlic-free"). For a diet, what the cook asks for in the moment wins,
+    but only for the named ingredient: the rest of the diet still applies."""
+    text = f" {request.lower()} "
+    out: set[str] = set()
+    for d in diets:
+        diet = DIETS.get(d.lower().strip())
+        for words, _ in (diet[0] if diet else []):
+            for w in words:
+                for m in re.finditer(rf"(?<![a-z]){re.escape(w)}(?:e?s)?(?![a-z])", text):
+                    if _NEGATION_BEFORE.search(text[: m.start()]) or _FREE_AFTER.search(text[m.end():]):
+                        continue
+                    out.add(w)
+                    break
+    return out
+
+
+def diet_hint(diet: str) -> str:
+    rule = DIETS.get(diet.lower().strip())
+    return f"{diet} ({rule[1]})" if rule else diet
+
+
 def _singular(word: str) -> str:
     word = word.strip().lower()
     if word.endswith("ies") and len(word) > 4:
@@ -104,9 +168,10 @@ def _allergen_key(allergy: str) -> str:
 def allergen_words(allergy: str) -> list[str]:
     """'tree nuts' -> almond, cashew, ...; 'peanuts' -> peanut, groundnut; 'kiwi' -> kiwi."""
     a = _allergen_key(allergy)
-    for key, words in ALLERGEN_FAMILIES.items():
+    # longest name first: "tree nuts" is the tree-nut family, not "nut" (which covers peanuts too)
+    for key in sorted(ALLERGEN_FAMILIES, key=len, reverse=True):
         if a == key or a.endswith(" " + key):
-            return words
+            return ALLERGEN_FAMILIES[key]
     return [a] if a else []
 
 
@@ -141,7 +206,13 @@ class Conflict:
 
 
 def find_conflicts(ingredient_names: Iterable[str], allergies: Iterable[str] = (),
-                   conditions: Iterable[str] = ()) -> list[Conflict]:
+                   conditions: Iterable[str] = (), diets: Iterable[str] = (),
+                   diet_allowed: Iterable[str] = ()) -> list[Conflict]:
+    """``diet_allowed``: words the cook asked for by name (see
+    ``requested_words``); they don't count against a diet, and neither does a
+    longer word containing them ("chicken stock" for a chicken biryani).
+    Allergies and conditions are never allowed this way."""
+    allowed = [a.lower() for a in diet_allowed]
     rules: list[tuple[str, list[str], list[str]]] = []
     for a in allergies:
         rules.append((f"{a} allergy", allergen_words(a), allergen_exemptions(a)))
@@ -149,6 +220,11 @@ def find_conflicts(ingredient_names: Iterable[str], allergies: Iterable[str] = (
         rule = condition_rule(c)
         if rule and rule[0]:
             rules.append((c, rule[0], rule[1]))
+    for d in diets:
+        diet = DIETS.get(d.lower().strip())
+        for words, exempt in (diet[0] if diet else []):
+            words = [w for w in words if not any(_has_word(f" {w} ", a) for a in allowed)]
+            rules.append((f"{d} diet", words, exempt))
     out: list[Conflict] = []
     for name in ingredient_names:
         text = f" {name.lower()} "

@@ -126,11 +126,11 @@ def fake_llm_script() -> dict[str, list]:
 
 # ------------------------------------------------------------------ one turn
 async def run_fixture(fx: Fixture, *, stt: STTProvider, llm, tts, realtime: bool = True,
-                      timeout_s: float = 45.0) -> dict:
+                      timeout_s: float = 45.0, instant: bool = True) -> dict:
     """Stream one fixture through a fresh agent and return its turn summary."""
     src = WavSource(fx.file, realtime=realtime, trailing_silence_s=2.0, hold_open=True)
     sink = SimulatedSink(realtime=False)  # measure the agent, not playback
-    agent = CookingAgent(stt, llm, tts, sink, AgentConfig(barge_in=False), MetricsSink())
+    agent = CookingAgent(stt, llm, tts, sink, AgentConfig(barge_in=False, instant_commands=instant), MetricsSink())
     if fx.needs_recipe:
         agent.session.load_recipe(BENCH_RECIPE.model_copy(deep=True))
         agent.session.next_step()
@@ -184,7 +184,9 @@ async def run_fixture(fx: Fixture, *, stt: STTProvider, llm, tts, realtime: bool
 
 
 # ------------------------------------------------------------------ whole benchmark
-def _make_providers(fake: bool, fx: Fixture, speech_end_s: float):
+def _make_providers(fake: bool, fx: Fixture, speech_end_s: float, text_stt: bool = False):
+    """``text_stt``: feed the fixture's correct text instead of recognising its
+    audio, so a comparison of LLMs isn't blurred by speech-recognition errors."""
     if fake:
         from .providers.fake import ScriptedLLM, ToneTTS
 
@@ -193,12 +195,16 @@ def _make_providers(fake: bool, fx: Fixture, speech_end_s: float):
     from .config import Settings, make_llm, make_stt, make_tts
 
     s = Settings.from_env()
-    return make_stt(s), make_llm(s), make_tts(s)
+    stt = FixtureSTT(fx.text, speech_end_s) if text_stt else make_stt(s)
+    return stt, make_llm(s), make_tts(s)
 
 
 async def run_benchmark(fixtures_dir: Path = DEFAULT_FIXTURES, *, runs: int = 1, fake: bool = False,
                         realtime: bool = True, only: Optional[list[str]] = None,
-                        timeout_s: float = 45.0, progress=print) -> dict:
+                        timeout_s: float = 45.0, progress=print, text_stt: bool = False,
+                        instant: bool = True) -> dict:
+    """``instant=False`` sends every fixture to the LLM (instant commands would
+    otherwise answer several of them without it), to measure the model itself."""
     fixtures = load_manifest(fixtures_dir)
     if only:
         fixtures = [f for f in fixtures if f.name in only]
@@ -208,12 +214,14 @@ async def run_benchmark(fixtures_dir: Path = DEFAULT_FIXTURES, *, runs: int = 1,
     providers: dict[str, str] = {}
     for run in range(1, runs + 1):
         for fx in fixtures:
-            stt, llm, tts = _make_providers(fake, fx, WavSource(fx.file, realtime=False).speech_end_offset)
+            stt, llm, tts = _make_providers(fake, fx, WavSource(fx.file, realtime=False).speech_end_offset,
+                                            text_stt=text_stt)
             try:
                 if hasattr(tts, "warmup"):
                     with contextlib.suppress(Exception):
                         await tts.warmup()  # connection setup is not per-turn latency
-                r = await run_fixture(fx, stt=stt, llm=llm, tts=tts, realtime=realtime, timeout_s=timeout_s)
+                r = await run_fixture(fx, stt=stt, llm=llm, tts=tts, realtime=realtime, timeout_s=timeout_s,
+                                      instant=instant)
             finally:
                 if hasattr(tts, "aclose"):
                     with contextlib.suppress(Exception):
@@ -223,6 +231,7 @@ async def run_benchmark(fixtures_dir: Path = DEFAULT_FIXTURES, *, runs: int = 1,
             results.append(r)
             progress(_line(r))
     return {"providers": providers, "realtime": realtime, "fake": fake, "runs": runs,
+            "text_stt": text_stt, "instant": instant,
             "turns": results, "summary": summarize(results)}
 
 

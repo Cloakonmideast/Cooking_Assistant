@@ -95,6 +95,8 @@ class ScriptedLLM:
     first_token_delay_s: float = 0.0
     calls: list[list[Message]] = field(default_factory=list)
     prompts: list[str] = field(default_factory=list)  # generate_structured prompts, for tests
+    # generate_structured answers for other schemas, by class name; an Exception is raised
+    structured: dict[str, object] = field(default_factory=dict)
 
     async def stream(self, system: str, history: list[Message], tools: list[ToolSpec]) -> AsyncIterator[LLMEvent]:
         self.calls.append(list(history))
@@ -159,6 +161,11 @@ class ScriptedLLM:
 
     async def generate_structured(self, prompt: str, schema: Type[M], media=None) -> M:
         self.prompts.append(prompt)
+        if schema.__name__ in self.structured:
+            answer = self.structured[schema.__name__]
+            if isinstance(answer, Exception):
+                raise answer
+            return schema.model_validate(answer)
         if self.recipe is None:
             raise RuntimeError("ScriptedLLM has no recipe configured")
         if isinstance(self.recipe, schema):

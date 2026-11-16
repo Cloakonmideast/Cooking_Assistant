@@ -8,3 +8,5 @@ venv/
 *.db
 metrics.jsonl
 bench/results.json
+docs/
+tests/
