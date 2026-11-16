@@ -126,7 +126,7 @@ _DIET_WORD = (r"(?:vegetarians?|veg|veggie|vegans?|jains?|eggetarians?|eggitaria
 # "I'm a vegetarian", "we're vegan", "I've gone vegan", "I'm strictly jain": the cook about themselves,
 # a diet word right after (so "I'm making a vegetarian biryani" doesn't count).
 _STATED_DIET = re.compile(
-    r"(?:^|[,.;!?]\s*|(?<![a-z])(?:and|but|also|so)\s+)"
+    r"(?<![a-z'])"
     r"(?:i'?m|i am|we'?re|we are|i'?ve (?:gone|become|turned)|we'?ve (?:gone|become|turned)|"
     r"i (?:have )?(?:gone|become|turned)|i follow|we follow|i'?m now)\s+"
     r"(?:(?:a|an|now|strictly|pure|fully|mostly|also|totally|completely|basically|still|actually|"

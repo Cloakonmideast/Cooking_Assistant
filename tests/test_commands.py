@@ -208,3 +208,10 @@ def test_step_results_left_to_agent():
 
 def test_finished_recipe_message_is_spoken():
     assert speak_result([ToolResult("next_step", {"finished": True, "message": "That was the last step."})]) ==         "That was the last step."
+
+
+@pytest.mark.parametrize("said", ["right, that's toasted, what's next", "okay done, what now?",
+                                  "what's next", "that's done, what do I do next"])
+def test_whats_next_moves_on_while_cooking(cooking, said):
+    cooking.next_step()
+    assert calls(m(said, cooking)) == [("next_step", {})]

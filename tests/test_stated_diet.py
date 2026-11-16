@@ -60,3 +60,18 @@ def test_recipe_writer_gets_one_rule_when_both_are_stored():
     text = describe_for_recipe({"diet": ["vegetarian", "eggetarian"]})
     assert "eggs are fine" in text
     assert "seafood, eggs" not in text  # the plain vegetarian rule ("no ... seafood, eggs, ...") isn't sent too
+
+
+@pytest.mark.parametrize("said,diets", [
+    ("honestly I'm a vegetarian, but eggs are okay for me", {"eggetarian"}),
+    ("well we're vegan", {"vegan"}),
+    ("oh and I'm a strict jain", {"jain"}),
+])
+def test_statement_after_a_filler_word(said, diets):
+    """qwen3 stored "vegetarian (egg okay)" for the first one, which reads as plain vegetarian."""
+    assert stated_diets(said) == diets
+
+
+@pytest.mark.parametrize("said", ["I think I'm making a vegetarian biryani", "honestly I'm not vegan"])
+def test_filler_word_does_not_widen_to_requests(said):
+    assert stated_diets(said) == set()

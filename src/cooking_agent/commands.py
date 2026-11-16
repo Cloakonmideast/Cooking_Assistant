@@ -97,6 +97,11 @@ def _p(pattern: str) -> re.Pattern:
     return re.compile(pattern)
 
 
+# Ends with "what's next" / "what now": the cook is done with the step.
+_WHATS_NEXT = re.compile(r"(?:^|\s)(?:what's next|whats next|what is next|what now|what do i do next|"
+                         r"what do i do now|what's the next step|whats the next step)$")
+
+
 _YES = _p(r"(?:(?:yes|yeah|yea|yep|yup|sure|ok|okay|alright|of course|go ahead|do it|please do|"
           r"sounds good)\s*)+")
 _YES_TIMER = _p(r"(?:(?:yes|yeah|yep|yup|sure|ok|okay|alright|please)\s+)*(?:start it|start the timer)")
@@ -197,6 +202,8 @@ def match_command(text: str, session: CookingSession, store: Optional[RecipeStor
             # "no" to "ready for the next step?" means not yet.
             return CommandMatch([], reply=NO_REPLY, keep_open=awaiting is Awaiting.NEXT_STEP)
     if session.recipe is not None:
+        if session.phase is CookingPhase.COOKING and not answers_held and _WHATS_NEXT.search(t):
+            return _call("next_step")  # "right, that's toasted, what's next" (qwen3 answered instead, 2/2)
         if _NEXT.fullmatch(t):
             return None if answers_held else _call("next_step")
         if _BACK.fullmatch(t):
