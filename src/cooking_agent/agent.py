@@ -35,6 +35,7 @@ from .metrics import MetricsSink, TurnMetrics, now
 from .providers.base import (
     LLMProvider,
     Message,
+    ToolCall,
     STTProvider,
     SttEvent,
     TextDelta,
@@ -537,15 +538,24 @@ class CookingAgent:
     async def _instant(self, match, committed: list[Message], spoken: list[str],
                        emit: Callable[[str], None], m: TurnMetrics) -> None:
         """Run an instant command's tools and speak a fixed reply; no LLM.
-        Recorded in the history as plain text, valid for every provider."""
+
+        Recorded in the history as plain text, valid for every provider; or,
+        for an LLM with ``tool_history`` (Ollama), shaped as if the model had
+        called the tool itself. A local model copies the history's pattern:
+        with "next" -> "Step 1. ..." as plain text, qwen3 began writing
+        "next_step" as words instead of calling it."""
         results: list[ToolResult] = []
-        for c in match.calls:
+        calls = [ToolCall(c.name, c.args, id=f"instant-{self._turn_counter}-{i}") for i, c in enumerate(match.calls)]
+        for c in calls:
             m.tool_calls.append(c.name)
             results.append(await self.tools.dispatch(c))
         text = self._step_speech(results) or speak_result(results) or match.reply or ""
         if text:
             emit(text)
             self.on_text("assistant", text)
+        if calls and getattr(self.llm, "tool_history", False):
+            committed.append(Message("assistant", "", calls))
+            committed.append(Message("tool", tool_results=results))
         committed.append(Message("assistant", text))
         if match.keep_open:
             self._question_pending = True  # "hold on": the same question is still open

@@ -5,6 +5,55 @@ says what was done, why, and how it was checked.
 
 ---
 
+## 2026-11-16 — Phase 2, Task 12: understanding test, and three problems it found
+
+* New `cooking-agent understanding-eval [--runs 3] [--out FILE]`
+  (`understanding_eval.py`): 20 typed utterances on step 2 of a pulao with the
+  real "ready?" question pending (7 questions, 6 changes, 5 commands, 2
+  chit-chat). Accepted outcomes per case: an answer (no state-changing tool,
+  step and recipe unchanged) or a tool with arguments plus a check on the
+  result (e.g. the cashews are really gone). Only tool calls that succeeded
+  count. Fresh agent per run, in-memory recipe book and profile (nothing
+  written to the cook's database). The wording differs from the examples in
+  the prompt and tool descriptions (a test checks no case appears there).
+* **Problems the first real runs on qwen3 found, all fixed:**
+  1. **Instant turns taught the model to stop calling tools.** In the
+     history, "next" -> "Step 1. ..." looked like the model reading steps
+     without a tool, and qwen3 copied it: it wrote `next_step` as text, said
+     "let's remove the green chillies" without removing them, or said
+     nothing. Measured on the 11 change/command cases x 3, the expected tool
+     was called 21/33 times with that history, 24/33 with none and 28/33
+     with the instant turns written as tool calls. Instant turns are now
+     saved as (tool call, real tool result, spoken text) for Ollama
+     (`OllamaLLM.tool_history`); Gemini and the test fakes keep plain text,
+     which Gemini needs (its function calls carry signatures).
+  2. **`substitute_ingredient` failed on "2 tbsp".** The model sent the amount
+     with its unit; the cook heard "the quantity should be a number" instead
+     of the swap. The amount is now split into number and unit ("1 1/2 tsp",
+     "to taste" also work).
+  3. **Reading ahead from the recipe text.** Asked "what now", the model read
+     step 3 from `recipe_text` without calling `next_step`, so the app still
+     thought the cook was on step 2. The prompt now says steps are only read
+     by the step tools, and "finished / what's next" means `next_step`. The
+     eval case that exposed this was replaced with a fresh paraphrase so the
+     score isn't flattered.
+  The eval itself also needed two fixes: a failed tool call no longer counts
+  as right, and step 2 no longer states a time (it made the pending question
+  a timer offer, not "ready?").
+* **Context check:** with a full 40-message history and every recipe tool,
+  a turn's prompt is 4,510 of the 8,192 tokens (`prompt_eval_count`), so
+  nothing is silently cut off.
+* **Result on qwen3:8b after the fixes: 100% (60/60 runs), median turn
+  0.87 s.** Before them, single runs scored 85-90%.
+* README "Understanding test" section.
+* Checked: 13 new tests (`tests/test_understanding_eval.py`; 5 more in
+  `tests/test_mid_recipe.py` for "2 tbsp" and the history shape), each seen
+  failing first except the eval module's own tests, which were written after
+  the module; for those the judge was broken on purpose (step and recipe
+  checks removed) and the tests caught it. Full suite 404 passed.
+
+---
+
 ## 2026-11-16 — Phase 2, Task 11: keep the model loaded
 
 * While `run` (voice) or `chat` is going, a background task pings the model

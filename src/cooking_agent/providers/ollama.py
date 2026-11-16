@@ -50,6 +50,8 @@ def _get(obj: Any, key: str) -> Any:
 
 class OllamaLLM:
     name = "ollama"
+    # Instant commands go into the history as tool calls (see CookingAgent._instant).
+    tool_history = True
 
     def __init__(self, model: str, url: str = DEFAULT_URL, client: Any = None,
                  temperature: float = 0.4, num_ctx: int = 8192, timeout: float = 120.0):

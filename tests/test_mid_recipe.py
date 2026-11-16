@@ -202,3 +202,48 @@ async def test_substitute_accepts_an_amount_said_with_its_unit(recipe):
     assert out["line"] == "1 and 1/2 tsp caraway seeds, instead of cumin seeds"
     out = await call(tb, "substitute_ingredient", ingredient="salt", replacement="rock salt", quantity="to taste")
     assert out["line"] == "rock salt, instead of salt"
+
+
+# ------------------------------------------------------------ instant turns in the history
+async def test_instant_turns_are_tool_shaped_for_models_that_learn_from_them(recipe):
+    """With instant turns as plain text ("next" -> "Step 1. ..."), qwen3 copied the
+    pattern and wrote "next_step" as text instead of calling it (21/33 right vs 28/33
+    with tool-shaped history, measured)."""
+    llm = ScriptedLLM(recipe=recipe, script={"recipe": [ToolCall("get_recipe", {"dish": "jeera rice"})]})
+    llm.tool_history = True
+    agent = CookingAgent(QueueSTT(), llm, ToneTTS(), SimulatedSink(), AgentConfig())
+    await agent.submit_text("find a jeera rice recipe")
+    n = len(agent.history)
+    await agent.submit_text("next")
+    turn = agent.history[n:]
+    assert [m.role for m in turn] == ["user", "assistant", "tool", "assistant"]
+    assert [c.name for c in turn[1].tool_calls] == ["next_step"] and turn[1].tool_calls[0].id
+    assert turn[2].tool_results[0].result["step_number"] == 1
+    assert turn[2].tool_results[0].id == turn[1].tool_calls[0].id
+    assert turn[3].text.startswith("Step 1. Soak the rice") and turn[3].text.endswith("20 minutes?")
+
+
+async def test_instant_turns_stay_plain_text_for_other_models(recipe):
+    llm = ScriptedLLM(recipe=recipe, script={"recipe": [ToolCall("get_recipe", {"dish": "jeera rice"})]})
+    agent = CookingAgent(QueueSTT(), llm, ToneTTS(), SimulatedSink(), AgentConfig())
+    await agent.submit_text("find a jeera rice recipe")
+    n = len(agent.history)
+    await agent.submit_text("next")
+    assert [m.role for m in agent.history[n:]] == ["user", "assistant"]
+
+
+async def test_canned_instant_reply_stays_plain(recipe):
+    llm = ScriptedLLM(recipe=recipe, script={"recipe": [ToolCall("get_recipe", {"dish": "jeera rice"})]})
+    llm.tool_history = True
+    agent = CookingAgent(QueueSTT(), llm, ToneTTS(), SimulatedSink(), AgentConfig())
+    await agent.submit_text("find a jeera rice recipe")
+    await agent.submit_text("next")
+    n = len(agent.history)
+    await agent.submit_text("not yet")  # "No problem, take your time." with no tool
+    assert [m.role for m in agent.history[n:]] == ["user", "assistant"]
+
+
+def test_ollama_asks_for_tool_shaped_history():
+    from cooking_agent.providers.ollama import OllamaLLM
+
+    assert OllamaLLM(model="qwen3:8b", client=object()).tool_history is True

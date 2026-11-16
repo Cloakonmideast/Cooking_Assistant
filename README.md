@@ -434,6 +434,19 @@ Each goes through the normal path (profile in the prompt, the code check, one
 rewrite if needed) and passes if no conflict is left. `--out FILE` keeps the
 recipes for reading.
 
+### Understanding test
+
+`cooking-agent understanding-eval` checks what the assistant does with 20
+things a cook might say on step 2 of a pulao, right after "Are you ready for
+the next step?": questions about the dish ("would brown rice work here?"),
+changes ("drop the cashews", "can you make it milder"), loose commands
+("alright, the cashews look golden", "we're cooking for four now") and
+chit-chat. A question must get an answer with the step and recipe untouched; a
+change must really change the recipe (the cashews are gone) without moving
+the step; a tool that returned an error doesn't count. Each case runs 3 times
+(`--runs`), with instant commands on as in real use, on a throwaway recipe
+book and profile. `--out FILE` keeps every reply.
+
 ### Choosing the local model
 
 Measured 2026-11-16 on an RTX 4060 Laptop GPU (8 GB), Ollama 0.40.16,

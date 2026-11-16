@@ -25,7 +25,7 @@
 | 9. Questions and changes mid-recipe | done |
 | 10. Learn and use everything the cook prefers | done |
 | 11. Keep the model loaded (15-min and pre-timer pings) | done |
-| 12. Understanding test (questions, changes, commands) | not started |
+| 12. Understanding test (questions, changes, commands) | done |
 | 13. Test Gemma 4 and select the best model | not started |
 | 14. Fable review of Phase 2 | not started |
 
