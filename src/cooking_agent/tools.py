@@ -313,7 +313,8 @@ class ToolBox:
             Tool("remember_preference", "Remember a lasting preference of the cook for future recipes "
                  "(e.g. 'I'm vegetarian', 'I'm allergic to peanuts', 'I hate mushrooms', 'I always have paneer'). "
                  "Not for one-off requests like 'no onions today'.", RememberArgs, self._wrap(self._remember)),
-            Tool("forget_preference", "Forget a preference the cook no longer has.",
+            Tool("forget_preference", "Forget a preference the cook no longer has, or a change they usually make "
+                 "(e.g. 'stop swapping ghee for butter' -> 'butter').",
                  ForgetArgs, self._wrap(self._forget)),
             Tool("finish_setup", "Finish the first-time setup after saving what the cook said about allergies, "
                  "conditions and diet (or after they said none, or asked to skip).",

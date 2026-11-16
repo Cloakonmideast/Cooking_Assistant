@@ -30,7 +30,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from .dietary import DIETS, condition_hint, diet_hint, find_conflicts
+from .dietary import ALLERGEN_FAMILIES, DIETS, allergen_words, condition_hint, diet_hint, find_conflicts
+from .recipe import ingredient_words
 
 CATEGORIES = ("allergy", "condition", "diet", "dislike", "like", "pantry", "other")
 
@@ -63,6 +64,18 @@ _HABIT_KEYS = {"swap": "usually_swaps", "remove": "usually_leaves_out", "add": "
 
 def _norm(text: str) -> str:
     return " ".join(text.lower().strip().split())
+
+
+# Words that don't change what a habit is about ("red onion" is an onion habit).
+_HABIT_IGNORE = {"unsalted", "salted", "red", "white", "yellow", "green", "organic", "plain", "extra", "virgin",
+                 "chopped", "sliced", "diced", "minced", "grated", "fresh", "large", "small", "medium", "finely",
+                 "ground", "whole", "dried", "ripe", "cooked", "raw", "boneless", "skinless"}
+
+
+def habit_key(name: str) -> str:
+    """'red onions' -> 'onion', 'unsalted butter' -> 'butter', 'green chillies' -> 'chilli'."""
+    words = ingredient_words(name)
+    return " ".join(w for w in words if w not in _HABIT_IGNORE) or " ".join(words)
 
 
 def ingredient_key(name: str) -> str:
@@ -214,13 +227,21 @@ class PreferenceStore:
             self.remember("diet", d)
 
     def forget(self, value: str) -> list[dict]:
-        """Remove stated preferences mentioning ``value`` (any category)."""
+        """Remove stated preferences mentioning ``value`` (any category), and
+        learned changes about it ("forget that I swap ghee for butter")."""
         v = _norm(value)
         rows = [r for r in self.stated() if v in r["value"] or r["value"] in v]
         for r in rows:
             self._db.execute("DELETE FROM preferences WHERE id = ?", (r["id"],))
+        words = set(habit_key(v).split())
+        habits: dict[str, None] = {}
+        for i, kind, original, replacement in self._db.execute(
+                "SELECT id, kind, original, replacement FROM adjustments").fetchall():
+            if words and any(words <= set(habit_key(n).split()) for n in (original, replacement) if n):
+                self._db.execute("DELETE FROM adjustments WHERE id = ?", (i,))
+                habits[_habit_text(kind, original, replacement)] = None
         self._db.commit()
-        return rows
+        return rows + [{"id": None, "category": "habit", "value": h} for h in habits]
 
     def stated(self) -> list[dict]:
         rows = self._db.execute("SELECT id, category, value FROM preferences ORDER BY category, added_at, id")
@@ -276,13 +297,34 @@ class PreferenceStore:
             (kind, original, replacement, load_id, time.time()))
         self._db.commit()
 
+    def _grouped_adjustments(self) -> list[dict]:
+        """Changes grouped by what they're about ("onions", "onion" and "red
+        onion" are one), each with the number of different recipes it was made
+        in, when it was last made, and the name it was most often called."""
+        groups: dict[tuple, dict] = {}
+        for i, kind, original, replacement, load_id, ts in self._db.execute(
+                "SELECT id, kind, original, replacement, load_id, ts FROM adjustments ORDER BY id").fetchall():
+            key = (kind, habit_key(original), habit_key(replacement) if replacement else "")
+            g = groups.setdefault(key, {"loads": set(), "names": collections.Counter(),
+                                        "repl": collections.Counter(), "last": 0.0})
+            g["loads"].add(load_id if load_id is not None else -i)
+            g["names"][original] += 1
+            if replacement:
+                g["repl"][replacement] += 1
+            g["last"] = max(g["last"], ts)
+
+        def name(c: collections.Counter) -> Optional[str]:
+            return min(c, key=lambda n: (-c[n], len(n), n)) if c else None
+
+        return [{"kind": k[0], "key": k[1:], "original": name(g["names"]), "replacement": name(g["repl"]),
+                 "times": len(g["loads"]), "last": g["last"]} for k, g in groups.items()]
+
     def adjustments(self, min_times: int = 1) -> list[dict]:
         """Saved changes with the number of different recipes each was made in."""
-        rows = self._db.execute(
-            "SELECT kind, original, replacement, COUNT(DISTINCT COALESCE(load_id, -id)) AS n, MAX(ts) AS last "
-            "FROM adjustments GROUP BY kind, original, replacement HAVING n >= ? ORDER BY n DESC, last DESC",
-            (min_times,)).fetchall()
-        return [{"kind": k, "original": o, "replacement": r or None, "times": n} for k, o, r, n, _ in rows]
+        rows = [a for a in self._grouped_adjustments() if a["times"] >= min_times]
+        rows.sort(key=lambda a: (-a["times"], -a["last"]))
+        return [{"kind": a["kind"], "original": a["original"], "replacement": a["replacement"], "times": a["times"]}
+                for a in rows]
 
     def forget_history(self) -> None:
         self._db.executescript("DELETE FROM requests; DELETE FROM ingredient_use; DELETE FROM adjustments;")
@@ -309,16 +351,20 @@ class PreferenceStore:
             (INGREDIENT_MIN_RECIPES, TOP_INGREDIENTS)).fetchall()
         if used:
             out["often_cooks_with"] = [n for (n,) in used]
-        amount_set: set[str] = set()  # "more" and "less" of the same thing: the more frequent wins
-        for a in self.adjustments(ADJUST_MIN_TIMES):
-            key = _HABIT_KEYS[a["kind"]]
-            if a["kind"] in ("more", "less"):
-                if a["original"] in amount_set:
-                    continue
-                amount_set.add(a["original"])
-            items = out.setdefault(key, [])
+        # Opposite habits (more/less, leave out/add, ghee->butter/butter->ghee): the latest wins.
+        decided: set = set()
+        habits = sorted((a for a in self._grouped_adjustments() if a["times"] >= ADJUST_MIN_TIMES),
+                        key=lambda a: -a["last"])
+        for a in habits:
+            kind, (orig, repl) = a["kind"], a["key"]
+            topic = (("amount", orig) if kind in ("more", "less") else ("in-out", orig) if kind in ("remove", "add")
+                     else ("swap", frozenset((orig, repl))))
+            if topic in decided:
+                continue
+            decided.add(topic)
+            items = out.setdefault(_HABIT_KEYS[kind], [])
             if len(items) < TOP_ADJUSTMENTS:
-                items.append({"from": a["original"], "to": a["replacement"]} if a["kind"] == "swap" else a["original"])
+                items.append({"from": a["original"], "to": a["replacement"]} if kind == "swap" else a["original"])
         return out
 
     # -- combined ------------------------------------------------------------
@@ -351,12 +397,32 @@ def _diet_rule(stated: str) -> str:
     return diet_hint(known[0]) if known else stated
 
 
-def _safe(profile: dict, items: list[str]) -> list[str]:
+def _habit_text(kind: str, original: str, replacement: Optional[str]) -> str:
+    return {"swap": f"swaps {original} for {replacement}", "remove": f"leaves out {original}",
+            "add": f"adds {original}", "more": f"more {original}", "less": f"less {original}"}[kind]
+
+
+# A learned "more" or "add" of these isn't passed on with the condition (salt with high blood pressure).
+_CONDITION_LIMITS = [("blood pressure", {"salt", "soy", "stock", "bouillon", "pickle", "papad", "msg"}),
+                     ("hypertension", {"salt", "soy", "stock", "bouillon", "pickle", "papad", "msg"}),
+                     ("diabet", {"sugar", "jaggery", "honey", "syrup", "gur", "condensed"}),
+                     ("cholesterol", {"butter", "ghee", "cream", "lard"})]
+
+
+def _safe(profile: dict, items: list[str], more: bool = False) -> list[str]:
     """Never tell the writer to prefer something the cook can't have ('paneer'
-    + lactose intolerance, 'peanut oil' + peanut allergy, 'chicken' + vegetarian)."""
+    + lactose intolerance, 'peanut oil' + peanut allergy, 'chicken' + vegetarian).
+    With ``more`` (a learned "more" or "add"), also nothing a health condition
+    limits, and a "nuts" allergy covers peanuts too."""
     diets = sorted(prefer_eggetarian(diets_in(" ".join(profile.get("diet", [])))) & DIETS.keys())
-    bad = {c.ingredient for c in find_conflicts(items, profile.get("allergy", []), profile.get("condition", []),
-                                                diets=diets)}
+    allergies = list(profile.get("allergy", []))
+    if any(allergen_words(a) == ALLERGEN_FAMILIES["nut"] for a in allergies):
+        allergies.append("peanuts")  # learned habits only; the main check keeps its own word lists
+    bad = {c.ingredient for c in find_conflicts(items, allergies, profile.get("condition", []), diets=diets)}
+    if more:
+        conditions = " ".join(profile.get("condition", [])).lower()
+        limited = set().union(*(words for key, words in _CONDITION_LIMITS if key in conditions))
+        bad |= {i for i in items if set(ingredient_words(i)) & limited}
     return [i for i in items if i not in bad]
 
 
@@ -364,12 +430,12 @@ def usual_changes(profile: dict) -> dict:
     """The learned changes that are safe to apply for this cook."""
     learned = profile.get("learned_from_history", {})
     swaps = learned.get("usually_swaps", [])
-    safe_to = set(_safe(profile, [s["to"] for s in swaps]))
+    safe_to = set(_safe(profile, [s["to"] for s in swaps], more=True))
     return {
         "swaps": [s for s in swaps if s["to"] in safe_to],
         "leaves_out": learned.get("usually_leaves_out", []),
-        "adds": _safe(profile, learned.get("usually_adds", [])),
-        "more": _safe(profile, learned.get("usually_more", [])),
+        "adds": _safe(profile, learned.get("usually_adds", []), more=True),
+        "more": _safe(profile, learned.get("usually_more", []), more=True),
         "less": learned.get("usually_less", []),
     }
 

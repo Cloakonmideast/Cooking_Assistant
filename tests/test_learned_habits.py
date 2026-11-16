@@ -163,3 +163,60 @@ async def test_learned_vegetarian_does_not_flag_eggs_for_an_eggetarian(tmp_path,
     out = await call(tb, "get_recipe", dish="egg fried rice")
     assert "warnings" not in out
     assert "usually_asks_for" not in prefs.profile().get("learned_from_history", {})
+
+
+# ------------------------------------------------------------ review fixes I3, I11, I7
+from cooking_agent.preferences import usual_changes  # noqa: E402
+
+
+def test_name_variants_count_as_one_habit(prefs):
+    for load, name in enumerate(["onions", "onion", "red onion"]):
+        prefs.record_adjustment("remove", name, load_id=load)
+    for load, to in enumerate(["unsalted butter", "butter"]):
+        prefs.record_adjustment("swap", "ghee", to, load_id=10 + load)
+    learned = prefs.learned()
+    assert learned["usually_leaves_out"] == ["onion"]
+    assert learned["usually_swaps"] == [{"from": "ghee", "to": "butter"}]
+
+
+async def test_forget_preference_drops_a_learned_habit(tmp_path, prefs, recipe):
+    for load in (1, 2):
+        prefs.record_adjustment("swap", "ghee", "butter", load_id=load)
+        prefs.record_adjustment("remove", "cashews", load_id=load)
+    tb = make_box(tmp_path, prefs, recipe)
+    out = await call(tb, "forget_preference", value="butter")
+    assert "error" not in out and any("butter" in f for f in out["forgot"])
+    learned = prefs.learned()
+    assert "usually_swaps" not in learned and learned["usually_leaves_out"] == ["cashews"]
+
+
+def test_opposite_habits_the_latest_wins(prefs):
+    for load in (1, 2):
+        prefs.record_adjustment("remove", "cashews", load_id=load)
+    for load in (3, 4):
+        prefs.record_adjustment("add", "cashews", load_id=load)
+    for load in (5, 6):
+        prefs.record_adjustment("swap", "ghee", "butter", load_id=load)
+    for load in (7, 8):
+        prefs.record_adjustment("swap", "butter", "ghee", load_id=load)
+    learned = prefs.learned()
+    assert learned.get("usually_adds") == ["cashews"] and "usually_leaves_out" not in learned
+    assert learned["usually_swaps"] == [{"from": "butter", "to": "ghee"}]
+
+
+def test_more_of_something_a_condition_limits_is_not_passed_on(prefs):
+    prefs.remember("condition", "high blood pressure")
+    prefs.remember("condition", "diabetes")
+    for load in (1, 2):
+        prefs.record_adjustment("more", "salt", load_id=load)
+        prefs.record_adjustment("more", "sugar", load_id=load)
+        prefs.record_adjustment("more", "garlic", load_id=load)
+    assert usual_changes(prefs.profile())["more"] == ["garlic"]
+    assert "more salt" not in describe_for_recipe(prefs.profile())
+
+
+def test_nut_allergy_also_keeps_peanut_habits_out(prefs):
+    prefs.remember("allergy", "nuts")
+    for load in (1, 2):
+        prefs.record_adjustment("swap", "oil", "peanut oil", load_id=load)
+    assert usual_changes(prefs.profile())["swaps"] == []
