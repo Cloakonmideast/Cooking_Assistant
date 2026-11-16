@@ -619,7 +619,7 @@ class CookingAgent:
             all_results += results
             committed.append(reply)
             committed.append(Message("tool", tool_results=results))
-            step_text = self._step_speech(results)
+            step_text = self._step_speech(results) or self._amount_speech(calls, results)
             if step_text is not None:
                 # Read the step ourselves, word for word, instead of asking
                 # the model to: exact wording and one LLM round fewer.
@@ -632,6 +632,18 @@ class CookingAgent:
             committed.append(Message("assistant", "(gave up after too many tool calls)"))
             return
         self._ask_follow_up(all_results, committed, spoken, emit)
+
+    @staticmethod
+    def _amount_speech(calls: list[ToolCall], results: list[ToolResult]) -> Optional[str]:
+        """'Okay, now 1 and 1/2 cups basmati rice.' when every call this round was
+        a successful amount change: read by the app, because qwen3 misread the
+        new amount ("adjusted the rice to 1 cup" for 1 1/2 cups)."""
+        if not results or not all(c.name == "change_recipe" and (c.args or {}).get("action") == "change_amount"
+                                  for c in calls):
+            return None
+        if any("line" not in r.result or r.result.get("warnings") for r in results):
+            return None  # a warning must be said: leave it to the model
+        return " ".join(f"Okay, now {r.result['line']}." for r in results)
 
     @staticmethod
     def _step_speech(results: list[ToolResult]) -> Optional[str]:

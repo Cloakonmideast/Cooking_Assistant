@@ -140,3 +140,32 @@ async def test_a_model_that_stays_silent_still_gets_a_reply(recipe):
     agent = CookingAgent(QueueSTT(), llm, ToneTTS(), SimulatedSink(), AgentConfig())
     await agent.submit_text("tell me something")
     assert agent.tts.spoken[-1] == "Sorry, I didn't catch that. Could you say it another way?"
+
+
+async def test_the_app_reads_back_a_changed_amount_itself(recipe):
+    """qwen3 said "I've adjusted the rice to 1 cup" when the change made it 1 1/2 cups."""
+    llm = ScriptedLLM(recipe=recipe, script={
+        "recipe": [ToolCall("get_recipe", {"dish": "jeera rice"})],
+        "less rice": [ToolCall("change_recipe", {"action": "change_amount", "ingredient": "rice",
+                                                 "amount": "1/4 cup less"})]})
+    agent = CookingAgent(QueueSTT(), llm, ToneTTS(), SimulatedSink(), AgentConfig())
+    await agent.submit_text("find a jeera rice recipe")
+    rounds = len(llm.calls)
+    await agent.submit_text("a bit less rice please, a quarter cup less")
+    assert "Okay, now 3/4 cup basmati rice, rinsed." in agent.tts.spoken
+    assert len(llm.calls) == rounds + 1  # no second model round to misread it
+
+
+async def test_a_changed_amount_with_a_warning_is_left_to_the_model_to_say(recipe):
+    prefs = PreferenceStore(":memory:")
+    prefs.mark_setup_done()
+    prefs.remember("condition", "lactose intolerance")
+    milky = recipe.model_copy(update={"ingredients": [*recipe.ingredients,
+                                                      recipe.ingredients[2].model_copy(update={"name": "cream"})]})
+    llm = ScriptedLLM(recipe=milky, script={
+        "recipe": [ToolCall("get_recipe", {"dish": "jeera rice"})],
+        "more cream": [ToolCall("change_recipe", {"action": "change_amount", "ingredient": "cream", "amount": "double"})]})
+    agent = CookingAgent(QueueSTT(), llm, ToneTTS(), SimulatedSink(), AgentConfig(), preferences=prefs)
+    await agent.submit_text("find a jeera rice recipe")
+    await agent.submit_text("more cream please")
+    assert not any(t.startswith("Okay, now") for t in agent.tts.spoken)
