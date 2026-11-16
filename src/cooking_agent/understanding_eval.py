@@ -25,7 +25,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-from .agent import AgentConfig, CookingAgent
+from .agent import LLM_UNAVAILABLE, AgentConfig, CookingAgent
 from .audio import SimulatedSink
 from .preferences import PreferenceStore
 from .providers.base import ToolCall
@@ -33,6 +33,7 @@ from .providers.fake import QueueSTT, ToneTTS
 from .recipe import Recipe
 from .recipe_store import RecipeStore
 from .state import CookingSession
+from .tools import READY_QUESTION
 
 KINDS = ("question", "change", "command", "chat")
 # Tools that only read: allowed alongside an "answer".
@@ -60,6 +61,26 @@ RECIPE = Recipe.model_validate({
         {"instruction": "Turn off the heat and let it rest for 5 minutes."},
     ],
 })
+PASTA = Recipe.model_validate({
+    "title": "Tomato Spaghetti",
+    "servings": 2,
+    "ingredients": [
+        {"name": "spaghetti", "quantity": 200, "unit": "g"},
+        {"name": "olive oil", "quantity": 2, "unit": "tbsp"},
+        {"name": "garlic", "quantity": 3, "unit": "cloves"},
+        {"name": "chilli flakes", "quantity": 1, "unit": "tsp"},
+        {"name": "tinned tomatoes", "quantity": 400, "unit": "g"},
+        {"name": "basil leaves", "quantity": 8},
+        {"name": "parmesan", "quantity": 30, "unit": "g"},
+        {"name": "salt", "quantity": None},
+    ],
+    "steps": [
+        {"instruction": "Boil the spaghetti in salted water for 9 minutes, keeping a cup of the water."},
+        {"instruction": "Warm the olive oil and fry the garlic and chilli flakes until fragrant."},
+        {"instruction": "Add the tomatoes and simmer for 10 minutes."},
+        {"instruction": "Toss in the spaghetti with a splash of pasta water, the basil and the parmesan."},
+    ],
+})
 START_STEP = 2
 
 
@@ -78,7 +99,13 @@ def _names(s: CookingSession) -> list[str]:
 
 
 def _gone(word: str) -> Callable[[CookingSession], bool]:
-    return lambda s: not any(word in n for n in _names(s))
+    """Out of the ingredient list, and every step that mentions it tells the cook to leave it out."""
+    def check(s: CookingSession) -> bool:
+        if any(word in n for n in _names(s)):
+            return False
+        return all("leave out" in s.step_text(i).lower() for i, step in enumerate(s.recipe.steps)
+                   if word in step.instruction.lower())
+    return check
 
 
 def _has(word: str) -> Callable[[CookingSession], bool]:
@@ -97,6 +124,7 @@ class Case:
     text: str
     kind: str
     accept: tuple[Expect, ...]
+    recipe: Recipe = field(default_factory=lambda: RECIPE)
 
 
 UNDERSTANDING_CASES: list[Case] = [
@@ -123,6 +151,12 @@ UNDERSTANDING_CASES: list[Case] = [
          (Expect("substitute_ingredient", {"ingredient": "ghee"}, _has("butter")),)),
     Case("no onion for me today", "change",
          (Expect("change_recipe", {"action": "remove_ingredient"}, _gone("onion")),)),
+    Case("use half a cup less water", "change",
+         (Expect("change_recipe", {"action": "change_amount"}, _qty("water", lambda q: abs(q - 1.5) < 1e-6)),)),
+    Case("skip the chilli", "change",
+         (Expect("change_recipe", {"action": "remove_ingredient"}, _gone("chilli")),)),
+    # asking whether, not asking to: answer, change nothing
+    Case("could I leave out the garlic", "question", (ANSWER,)),
     # commands said loosely
     Case("alright, the cashews look golden", "command", (Expect("next_step"),)),
     Case("hang on, what did the last step say", "command", (Expect("previous_step"), ANSWER)),
@@ -133,15 +167,25 @@ UNDERSTANDING_CASES: list[Case] = [
     # chit-chat
     Case("this smells amazing", "chat", (ANSWER,)),
     Case("my mum used to make this every sunday", "chat", (ANSWER,)),
+    # a second dish
+    Case("is the parmesan really needed", "question", (ANSWER,), PASTA),
+    Case("why do you add pasta water at the end", "question", (ANSWER,), PASTA),
+    Case("leave the basil out", "change",
+         (Expect("change_recipe", {"action": "remove_ingredient"}, _gone("basil")),), PASTA),
+    Case("go easy on the chilli flakes", "change",
+         (Expect("change_recipe", {"action": "change_amount"}, _qty("chilli", lambda q: q < 1)),
+          Expect("change_recipe", {"action": "remove_ingredient"}, _gone("chilli"))), PASTA),
+    Case("okay the garlic smells great now", "command", (Expect("next_step"),), PASTA),
 ]
+_NOT_AN_ANSWER = (LLM_UNAVAILABLE, "Sorry, something went wrong")
 
 
-async def _fresh_agent(llm) -> CookingAgent:
+async def _fresh_agent(llm, recipe: Recipe = RECIPE) -> CookingAgent:
     prefs = PreferenceStore(":memory:")
     prefs.mark_setup_done()
     agent = CookingAgent(QueueSTT(), llm, ToneTTS(ms_per_char=0), SimulatedSink(), AgentConfig(barge_in=False),
                          recipes=RecipeStore(":memory:"), preferences=prefs)
-    agent.tools._loaded(RECIPE.model_copy(deep=True), "generated", None, "vegetable pulao")
+    agent.tools._loaded(recipe.model_copy(deep=True), "generated", None, recipe.title.lower())
     for _ in range(START_STEP):
         await agent.submit_text("next")  # instant command; leaves the real "ready?" question pending
     assert agent.session.step_index == START_STEP - 1
@@ -166,14 +210,17 @@ def _args_match(want: dict, got: dict) -> bool:
 
 
 def judge(case: Case, calls: list[ToolCall], before: dict, session: CookingSession, step_before: int,
-          succeeded: Optional[list[ToolCall]] = None) -> bool:
+          succeeded: Optional[list[ToolCall]] = None, reply: Optional[str] = None) -> bool:
     """True if what happened is one of the case's accepted outcomes. A tool
-    only counts if it ran without an error (``succeeded``)."""
+    only counts if it ran without an error (``succeeded``); an answer needs
+    something said that isn't an error message (``reply``)."""
     changing = [c for c in calls if c.name not in READ_ONLY]
     ok_calls = calls if succeeded is None else succeeded
     for exp in case.accept:
         if exp.tool is None:
-            if not changing and session.step_index == step_before and session.recipe.model_dump() == before:
+            answered = reply is None or (reply.strip() and not any(e in reply for e in _NOT_AN_ANSWER))
+            if answered and not changing and session.step_index == step_before \
+                    and session.recipe.model_dump() == before:
                 return True
             continue
         match = next((c for c in ok_calls if c.name == exp.tool and _args_match(exp.args, c.args or {})), None)
@@ -189,7 +236,7 @@ def judge(case: Case, calls: list[ToolCall], before: dict, session: CookingSessi
 
 
 async def _run_once(llm, case: Case) -> dict:
-    agent = await _fresh_agent(llm)
+    agent = await _fresh_agent(llm, case.recipe)
     calls: list[ToolCall] = []
     succeeded: list[ToolCall] = []
     dispatch = agent.tools.dispatch
@@ -203,6 +250,7 @@ async def _run_once(llm, case: Case) -> dict:
 
     agent.tools.dispatch = recording  # type: ignore[method-assign]
     before, step_before = agent.session.recipe.model_dump(), agent.session.step_index
+    said_before = len(agent.tts.spoken)
     t0 = time.perf_counter()
     error = None
     try:
@@ -210,8 +258,11 @@ async def _run_once(llm, case: Case) -> dict:
     except Exception as e:  # count it as wrong, keep going
         error = f"{type(e).__name__}: {e}"
     seconds = time.perf_counter() - t0
-    ok = error is None and judge(case, calls, before, agent.session, step_before, succeeded)
-    reply = " ".join(t for t in agent.tts.spoken[-3:])
+    said = agent.tts.spoken[said_before:]
+    reply = " ".join(said)
+    # the app's own follow-up questions aren't the assistant answering
+    answer = " ".join(t for t in said if t != READY_QUESTION and not t.startswith("Do you want me to start a timer"))
+    ok = error is None and judge(case, calls, before, agent.session, step_before, succeeded, answer)
     await agent.timers.aclose()
     return {"ok": ok, "tools": [f"{c.name}({c.args}){'' if c in succeeded else ' -> error'}" for c in calls],
             "reply": reply, "seconds": round(seconds, 2),
