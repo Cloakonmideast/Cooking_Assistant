@@ -16,7 +16,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Literal, Optional, Type
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from .providers.base import LLMProvider, ToolCall, ToolResult, ToolSpec
 from .recipe import Ingredient, Recipe, Step, format_minutes, parse_ingredient_line
@@ -120,6 +120,21 @@ class SubstituteArgs(BaseModel):
     quantity: Optional[float] = Field(default=None, ge=0, description="Amount of the replacement for the recipe's original servings.")
     unit: Optional[str] = Field(default=None, description="Unit for the replacement amount.")
     note: Optional[str] = Field(default=None, description="Short usage note, e.g. 'add with the onions'.")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _amount_with_unit(cls, data):
+        # Local models often send quantity "2 tbsp": split it rather than fail the swap.
+        q = data.get("quantity") if isinstance(data, dict) else None
+        if isinstance(q, str):
+            try:
+                data = {**data, "quantity": float(q)}
+            except ValueError:
+                parsed = parse_ingredient_line(f"{q} x")
+                data = {**data, "quantity": parsed.quantity}
+                if parsed.quantity is not None and parsed.unit and not data.get("unit"):
+                    data["unit"] = parsed.unit
+        return data
 
 
 class ChangeRecipeArgs(BaseModel):

@@ -188,3 +188,17 @@ async def test_question_mid_recipe_does_not_move_step(recipe):
     assert agent.session.step_index == 1
     assert "[current step] Heat ghee" in agent._system_prompt()
     assert "change_recipe" in agent._system_prompt()
+
+
+async def test_substitute_accepts_an_amount_said_with_its_unit(recipe):
+    """qwen3 sent quantity "2 tbsp"; the cook heard a validation error instead of the swap."""
+    tb = make_box(recipe)
+    await call(tb, "get_recipe", dish="jeera rice")
+    out = await call(tb, "substitute_ingredient", ingredient="ghee", replacement="butter", quantity="2 tbsp",
+                     unit="tbsp")
+    assert out["line"] == "2 tbsp butter, instead of ghee"
+    out = await call(tb, "substitute_ingredient", ingredient="cumin", replacement="caraway seeds",
+                     quantity="1 1/2 tsp")
+    assert out["line"] == "1 and 1/2 tsp caraway seeds, instead of cumin seeds"
+    out = await call(tb, "substitute_ingredient", ingredient="salt", replacement="rock salt", quantity="to taste")
+    assert out["line"] == "rock salt, instead of salt"

@@ -277,6 +277,23 @@ async def _diet_eval(args: argparse.Namespace) -> int:
     return 0 if report["summary"]["passed"] == report["summary"]["total"] else 1
 
 
+# ------------------------------------------------------------------ understanding-eval
+async def _understanding_eval(args: argparse.Namespace) -> int:
+    import json
+    from pathlib import Path
+
+    from .understanding_eval import format_understanding_report, run_understanding_eval
+
+    llm = make_llm(Settings.from_env())
+    await _warm_up_llm(llm)
+    report = await run_understanding_eval(llm, runs=args.runs)
+    print(format_understanding_report(report))
+    if args.out:
+        Path(args.out).write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+        print(f"wrote {args.out}")
+    return 0
+
+
 # ------------------------------------------------------------------ diagnose
 async def _diagnose(args: argparse.Namespace) -> int:
     ok = True
@@ -403,6 +420,11 @@ def main(argv: list[str] | None = None) -> int:
     de = sub.add_parser("diet-eval", help="check that the LLM's recipes keep to diets, allergies and conditions")
     de.add_argument("--out", default=None, help="write the full JSON report here")
 
+    ue = sub.add_parser("understanding-eval",
+                        help="check the LLM handles questions, changes and loose commands mid-recipe")
+    ue.add_argument("--runs", type=int, default=3, help="times to run each case (default 3)")
+    ue.add_argument("--out", default=None, help="write the full JSON report here")
+
     d = sub.add_parser("diagnose", help="check devices, mic level and providers")
     d.add_argument("--mic-seconds", type=float, default=3.0, help="0 to skip the mic test")
     d.add_argument("--input-device", default=None)
@@ -413,7 +435,8 @@ def main(argv: list[str] | None = None) -> int:
     for noisy in ("httpx", "websockets", "google_genai"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
     handler = {"run": _run, "chat": _chat, "demo": _demo, "bench": _bench, "recipes": _recipes, "prefs": _prefs, "setup": _setup,
-               "diagnose": _diagnose, "diet-eval": _diet_eval}[args.cmd]
+               "diagnose": _diagnose, "diet-eval": _diet_eval,
+               "understanding-eval": _understanding_eval}[args.cmd]
     try:
         return asyncio.run(handler(args))
     except KeyboardInterrupt:
