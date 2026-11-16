@@ -224,6 +224,12 @@ class ToolBox:
         return list(self._tools)
 
     async def dispatch(self, call: ToolCall) -> ToolResult:
+        args = call.args or {}
+        if call.name == "change_recipe" and args.get("action") in ("substitute_ingredient", "substitute", "swap"):
+            # qwen3 sometimes puts the swap tool's name in change_recipe's action
+            rest = {k: v for k, v in args.items() if k not in ("action", "reason", "amount", "step_number", "text")}
+            result = await self.dispatch(ToolCall("substitute_ingredient", rest, call.id))
+            return ToolResult(call.name, result.result, call.id)
         tool = self._tools.get(call.name)
         if tool is None:
             return ToolResult(call.name, {"error": f"Unknown tool {call.name}."}, call.id)
