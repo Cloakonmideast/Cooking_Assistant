@@ -69,7 +69,63 @@ one you'd pick", "no, keep them", "keep the cashews, that's fine" and "use
 the other option instead" each did the right thing; diet test 10/10 (2
 rewrites) after the writer prompt change. The assistant's own system prompt
 is unchanged (a prompt line was tried and reverted), so the routing and
-understanding results stand. Fable is running a separate test pass.
+understanding results stand.
+
+**Fable's test pass** (as the user asked: Fable does the testing; about 80
+real-model scenarios on qwen3, one at a time). The question was asked
+correctly in 54 of 54 recipe loads, with nothing false said, but handling the
+answer had code bugs. All fixed test-first in one pass (suite 607 → 697,
+every new test seen failing first):
+* A reply turning an option down picked it ("I'm allergic to almonds", "I
+  don't have tofu" → swapped). Now every word left after carrier words
+  ("use", "make", "please"...) must belong to one option, and one of them
+  must be distinctive; anything else goes to the model.
+* "just the kaju curry" made the offered coconut curry (the shared word
+  "curry"). Words shared with the dish in hand don't choose an option; naming
+  the dish in hand keeps it.
+* "leave the onions out" removed the cashews; "keep them out" kept them. Leave
+  out / take out / keep / skip only count for "it", "them" or the asked-about
+  ingredient.
+* Taking the suggestion twice taught a new habit ("swap cashews for almonds",
+  and the next pulao got almonds). A change that answers the app's question
+  isn't recorded.
+* The "kept it in" check matched another ingredient sharing a word (peanut
+  butter for butter: "yes" swapped the peanut butter). It's now the same
+  ingredient only ("cashew nuts" for cashews counts; "garlic powder" vs
+  "garlic cloves" doesn't), and the answer acts on that line.
+* The instant swap dropped the amount (13 of 13). It now carries the
+  replaced line's amount.
+* "do it", "do that", "what you suggested" started like questions and went to
+  the model. The exact answers are matched first.
+* Wrong "built around" (peanut butter cookies / butter, sweet potato fries /
+  potatoes, chicken curry / curry powder, "no-onion pav bhaji" / onion...)
+  and misses (mattar, channa, curd rice, saag, prawn/shrimp, kaaju, omelette,
+  aubergine...). Fixed with a bounded list of compound ingredients and
+  names, and leading "no-/without X" ignored. These lists are never
+  complete; a miss falls back to the old behaviour.
+* The glossary said "rajma means kidney" (now "kidney bean") and fired on
+  "kaju-free korma".
+* A recipe-book recipe's usual changes ("swap ghee for butter") weren't said
+  with the question; they are now, in both paths, and its wording no longer
+  says "kept" (nothing was changed in their own recipe).
+* Options ignored dislikes and other habits ("no almonds" then "I'd go with
+  almonds"); a second kept habit wasn't mentioned; "Kaju Curry for 2 for 2";
+  "asparagus" got "them".
+* The model added "no nuts" to the request itself for "let's make kaju
+  katli": a cashew-free katli of oats, and "get mum's kaju masala from my
+  recipe book" wrote a new cashew-free recipe instead. When the cook said no
+  exclusion and the dish is built around a usual leave-out, such a clause is
+  now dropped (a real allergy is still in the profile and still checked).
+* After a question about an option ("what's coconut curry like?"), the
+  model's own "want to try it?" + "yes" removed the cashews (2 of 2). The
+  choice now stays open and the app asks again in short ("So, shall I use
+  coconut milk instead, or keep the cashews?").
+
+Not changed, for the user: "keep them" isn't remembered per dish, so a kaju
+curry asks every time; changing dish while the question is open goes wrong
+(also without habits); older issues found along the way: the first turn
+sometimes says "let me find a recipe" without fetching it (about 15 of 50,
+also before this change), and "soak for 4 hours" offers a 4-minute timer.
 
 ---
 

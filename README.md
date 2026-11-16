@@ -356,9 +356,13 @@ leave out cashews and ask for a kaju curry, the cashews stay, and the app
 says so and offers better options: "Kaju Curry is built around cashews, so I
 kept them in, though you usually leave them out. You could use coconut milk
 instead, or make coconut curry. I'd go with coconut milk. Shall I, or keep the
-cashews?" Answer "yes" (its pick), "keep them", "the other one", or name an
-option ("coconut milk", "the curry one"). The options are written by the model
-and checked against your allergies, conditions and diet. A usual swap works
+cashews?" Answer "yes" (its pick), "keep them", "leave them out", "the other
+one", or name an option ("coconut milk", "make the coconut curry"); anything
+else, like "I don't have coconut milk" or a question about an option, goes to
+the assistant, and after a question the app asks again. Taking its
+suggestion isn't learned as a new habit. The options are written by the model
+and checked against your allergies, conditions, diet, dislikes and other
+habits. A usual swap works
 the same way: for ghee rice it asks "Shall I use butter anyway, or keep the
 ghee?". The dish name is checked in English and in common Indian names (kaju,
 aloo, palak, gobi, jeera, murgh, and so on), and the recipe writer is told
