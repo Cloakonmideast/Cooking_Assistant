@@ -449,17 +449,23 @@ book and profile. `--out FILE` keeps every reply.
 
 ### Choosing the local model
 
-Measured 2026-11-16 on an RTX 4060 Laptop GPU (8 GB), Ollama 0.40.16,
-`bench --text-stt --no-instant --runs 3` and `diet-eval`:
+Measured 2026-11-16 on an RTX 4060 Laptop GPU (8 GB), Ollama 0.40.16, one
+model loaded at a time, all on the GPU. Phase 2 (after the eggetarian diet,
+mid-recipe changes and the history fix), `bench --text-stt --no-instant
+--runs 3`, `diet-eval` and `understanding-eval --runs 3`:
 
-| Model | Tool routing | LLM first token p50 / p90 | Diet test | Rewrites needed |
+| Model | Tool routing | Understanding test | LLM first token p50 / p90 | Diet test |
 |---|---|---|---|---|
-| **`qwen3:8b`** (default) | 90% (missed "what can I use instead of ghee") | **1.0 s / 1.3 s** | 10/10 | 1 |
-| `llama3.1:8b` | 90% (called a tool for small talk) | 1.5 s / 2.1 s | 10/10 | 1 |
-| `mistral:7b` | 10% (almost never calls tools) | 0.5 s / 0.6 s | 10/10 | 1 |
+| **`qwen3:8b`** (default) | **97%** | **100%** (60/60) | 1.0 s / 1.7 s | **10/10** (1 rewrite) |
+| `gemma4:e4b` | 67% (answered in words instead of calling `get_recipe`, `next_step`, `substitute_ingredient`, `set_timer` in 10 of 30 turns) | 98% (one "milder" call had a bad argument) | **0.7 s** / 2.4 s | 9/10 (left a "Worcestershire sauce substitute" in a vegetarian caesar salad) |
 
-`qwen3:8b` ties `llama3.1:8b` on accuracy and diets and is about a third
-faster. Everyday commands don't depend on the model at all (instant commands).
+Phase 1 (first prompt, same benchmark): `qwen3:8b` 90% routing, 10/10 diets;
+`llama3.1:8b` 90%, 1.5 s first token, 10/10; `mistral:7b` 10% (almost never
+calls tools).
+
+`qwen3:8b` stays the default: Gemma 4 is a bit faster to start talking but
+misses a third of the tool calls, which is what moves the recipe and timers.
+Everyday commands don't depend on the model at all (instant commands).
 
 ## Barge-in and echo
 

@@ -26,7 +26,7 @@
 | 10. Learn and use everything the cook prefers | done |
 | 11. Keep the model loaded (15-min and pre-timer pings) | done |
 | 12. Understanding test (questions, changes, commands) | done |
-| 13. Test Gemma 4 and select the best model | not started |
+| 13. Test Gemma 4 and select the best model | done (qwen3:8b kept) |
 | 14. Fable review of Phase 2 | not started |
 
 **Execution approach:** Native: Opus 5.5 builds every task in the main session, Fable (the configured `advisorModel`) advises at decision points, and a fresh Fable reviewer subagent reviews the whole branch at the end. Its findings are fixed and logged before handing back to the user.

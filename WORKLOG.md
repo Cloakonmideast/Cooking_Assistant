@@ -5,6 +5,36 @@ says what was done, why, and how it was checked.
 
 ---
 
+## 2026-11-16 — Phase 2, Task 13: Gemma 4 tested, qwen3:8b kept
+
+* Same frozen prompt for both, one model loaded at a time (`ollama stop` the
+  other), both 100% on the GPU with 8192 context (`ollama ps`).
+* Results (`bench --text-stt --no-instant --runs 3`, `diet-eval`,
+  `understanding-eval --runs 3`):
+
+  | | qwen3:8b | gemma4:e4b |
+  |---|---|---|
+  | tool routing | **97%** | 67% |
+  | understanding test | **100%** (60/60) | 98% (59/60) |
+  | LLM first token p50 / p90 | 977 / 1747 ms | **748** / 2371 ms |
+  | first audio p50 | 1711 ms | **1256 ms** |
+  | diet test | **10/10** (1 rewrite) | 9/10 (1 rewrite) |
+
+* Gemma 4 replied in words instead of calling the tool in 10 of 30 benchmark
+  turns ("find me a recipe for jeera rice", "next step please", "set a rice
+  timer for twelve minutes", the ghee substitution); its one understanding
+  miss was `change_recipe` with the amount put in `text`; its diet miss was a
+  "Worcestershire sauce substitute" in a vegetarian caesar salad (arguably
+  our word list over-matching a vegetarian substitute; noted as a minor).
+* By the plan's rule (highest understanding and routing accuracy, diets
+  10/10, first word under ~1.5 s; speed only breaks ties) **qwen3:8b stays
+  the default**. No tie, so llama3.1 wasn't re-downloaded.
+* qwen3's routing went from 90% (Phase 1) to 97% with the Phase 2 changes.
+* `ollama rm gemma4:e4b` (6.6 GB freed; `ollama pull gemma4:e4b` brings it
+  back). README results table updated.
+
+---
+
 ## 2026-11-16 — Phase 2, Task 12: understanding test, and three problems it found
 
 * New `cooking-agent understanding-eval [--runs 3] [--out FILE]`
