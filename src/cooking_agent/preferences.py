@@ -474,14 +474,16 @@ def describe_for_recipe(profile: dict) -> str:
     if often := safe(learned.get("often_cooks_with", [])):
         lines.append(f"- Often cooks with: {', '.join(often)}; use them where natural.")
     usual = usual_changes(profile)
+    # more/less are applied to the written recipe in code (tools._apply_usual_changes), not asked for
+    # here, so a writer that follows the hint doesn't get them twice
     habits = ([f"usually swaps {s['from']} for {s['to']}" for s in usual["swaps"]]
               + [f"usually leaves out {x}" for x in usual["leaves_out"]]
-              + [f"usually adds {x}" for x in usual["adds"]]
-              + [f"likes more {x}" for x in usual["more"]]
-              + [f"likes less {x}" for x in usual["less"]])
+              + [f"usually adds {x}" for x in usual["adds"]])
     if habits:
         lines.append(f"- Changes they usually make, apply them unless the request says otherwise: "
                      f"{'; '.join(habits)}.")
+    if not lines:
+        return ""
     return ("About this cook (the request itself wins where it conflicts, except allergies and health "
             "conditions):\n"
             + "\n".join(lines) + "\n")

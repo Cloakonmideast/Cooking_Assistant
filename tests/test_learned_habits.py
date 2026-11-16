@@ -84,8 +84,9 @@ async def test_more_less_learned(tmp_path, prefs, recipe):
     await cook_twice(tb, "change_recipe", action="change_amount", ingredient="cumin", amount="less")
     learned = prefs.learned()
     assert learned["usually_more"] == ["ghee"] and learned["usually_less"] == ["cumin seeds"]
-    text = describe_for_recipe(prefs.profile())
-    assert "likes more ghee" in text and "likes less cumin seeds" in text
+    out = await call(tb, "get_recipe", dish="pulao")  # applied to the next recipe in code
+    assert {"more ghee (you usually like more)", "less cumin seeds (you usually like less)"} <= set(out["tailored_to"])
+    assert "2 and 1/4 tbsp ghee" in tb.session.ingredient_lines() and "1/2 tsp cumin seeds" in tb.session.ingredient_lines()
 
 
 async def test_forget_history_clears_adjustments(tmp_path, prefs, recipe):
@@ -220,3 +221,50 @@ def test_nut_allergy_also_keeps_peanut_habits_out(prefs):
     for load in (1, 2):
         prefs.record_adjustment("swap", "oil", "peanut oil", load_id=load)
     assert usual_changes(prefs.profile())["swaps"] == []
+
+
+# ------------------------------------------------------------ review fix C1: habits applied in code
+def _habits(prefs, *changes):
+    for load in (101, 102):
+        for kind, original, *replacement in changes:
+            prefs.record_adjustment(kind, original, replacement[0] if replacement else None, load_id=load)
+
+
+async def test_habits_are_applied_in_code_even_if_the_writer_ignores_them(tmp_path, prefs, recipe):
+    _habits(prefs, ("swap", "ghee", "butter"), ("remove", "cumin seeds"), ("more", "basmati rice"))
+    before = prefs.adjustments()
+    tb = make_box(tmp_path, prefs, recipe)  # the fake writer returns ghee and cumin regardless
+    out = await call(tb, "get_recipe", dish="pulao")
+    lines = tb.session.ingredient_lines()
+    assert "1 and 1/2 cups basmati rice, rinsed" in lines and not any("cumin" in x for x in lines)
+    assert any(x.startswith("1 and 1/2 tbsp butter") for x in lines)
+    assert {"butter instead of ghee (your usual swap)", "no cumin seeds (you usually leave it out)",
+            "more basmati rice (you usually like more)"} <= set(out["tailored_to"])
+    assert prefs.adjustments() == before  # applying a habit isn't new evidence for it
+
+
+async def test_only_habits_that_were_applied_are_claimed(tmp_path, prefs, recipe):
+    _habits(prefs, ("swap", "paneer", "tofu"), ("remove", "cashews"))
+    out = await call(make_box(tmp_path, prefs, recipe), "get_recipe", dish="pulao")
+    assert not any("tofu" in t or "cashew" in t for t in out.get("tailored_to", []))
+
+
+async def test_an_ingredient_the_cook_asked_for_is_not_left_out(tmp_path, prefs, recipe):
+    _habits(prefs, ("remove", "cumin seeds"))
+    tb = make_box(tmp_path, prefs, recipe)
+    await call(tb, "get_recipe", dish="cumin rice")
+    assert "cumin seeds" in [i.name for i in tb.session.recipe.ingredients]
+
+
+async def test_an_ambiguous_habit_is_skipped_not_an_error(tmp_path, prefs, recipe):
+    two_rices = recipe.model_copy(update={"ingredients": [*recipe.ingredients,
+                                                          recipe.ingredients[0].model_copy(update={"name": "rice flour"})]})
+    _habits(prefs, ("remove", "rice"))
+    out = await call(make_box(tmp_path, prefs, two_rices), "get_recipe", dish="pulao")
+    assert "error" not in out and out["ingredient_count"] == 5
+
+
+def test_more_and_less_are_left_to_the_code_not_the_writer(prefs):
+    _habits(prefs, ("more", "garlic"), ("less", "chillies"))
+    text = describe_for_recipe(prefs.profile())
+    assert "garlic" not in text and "chilli" not in text

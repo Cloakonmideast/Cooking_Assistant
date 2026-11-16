@@ -19,7 +19,7 @@ from typing import Any, Awaitable, Callable, Literal, Optional, Type
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from .providers.base import LLMProvider, ToolCall, ToolResult, ToolSpec
-from .recipe import Ingredient, Recipe, Step, format_minutes, parse_ingredient_line
+from .recipe import Ingredient, Recipe, Step, format_minutes, ingredient_words, parse_ingredient_line
 from .dietary import DIETS, find_conflicts, requested_words
 from .preferences import (CATEGORIES, PreferenceStore, describe_for_recipe, diets_in, prefer_eggetarian,
                           usual_changes)
@@ -384,10 +384,11 @@ class ToolBox:
             self._loaded(recipe, "generated", request_id, request)
             if servings and servings != recipe.servings:  # the model ignored the requested servings
                 self.session.scale_servings(servings)
-            out = self._recipe_summary(recipe) | {"source": "newly written, not from the recipe book"}
+            habits = self._apply_usual_changes(profile, request)
+            out = self._recipe_summary(self.session.recipe) | {"source": "newly written, not from the recipe book"}
             if warnings:
                 out["warnings"] = warnings
-            applied = self._applied(profile)
+            applied = self._applied(profile) + habits
             if applied:
                 out["tailored_to"] = applied
         if servings_learned:
@@ -487,12 +488,51 @@ class ToolBox:
         out += [f"no {d}" for d in profile.get("dislike", [])]
         learned = profile.get("learned_from_history", {})
         out += [f"{d} (you usually ask for it)" for d in learned.get("usually_asks_for", [])]
-        usual = usual_changes(profile)
-        out += [f"{x['to']} instead of {x['from']} (your usual swap)" for x in usual["swaps"]]
-        out += [f"no {x} (you usually leave it out)" for x in usual["leaves_out"]]
-        out += [f"with {x} (you usually add it)" for x in usual["adds"]]
-        out += [f"more {x}" for x in usual["more"]] + [f"less {x}" for x in usual["less"]]
         return out
+
+    def _apply_usual_changes(self, profile: dict, request: str) -> list[str]:
+        """Make the cook's usual changes to a newly written recipe in code (the
+        writer often ignores them) and return what was actually done, for the
+        assistant to mention. Skips an ingredient the request names ("cumin
+        rice") or that matches more than one line; never recorded as new
+        evidence for the habit."""
+        s = self.session
+        usual = usual_changes(profile)
+        named = set(ingredient_words(request))
+        done: list[str] = []
+
+        def target(name: str) -> Optional[int]:
+            if set(ingredient_words(name)) & named:
+                return None
+            return s.find_ingredient_words(name)
+
+        def attempt(action: Callable[[], None], note: str) -> None:
+            try:
+                action()
+                done.append(note)
+            except InvalidTransition as e:  # e.g. the last ingredient: leave the recipe as written
+                log.info("usual change skipped (%s): %s", note, e)
+
+        for x in usual["swaps"]:
+            idx = target(x["from"])
+            if idx is not None:
+                old = s.recipe.ingredients[idx]
+                attempt(lambda old=old, x=x: s.substitute(old.name, Ingredient(
+                    name=x["to"], quantity=old.quantity, unit=old.unit)), f"{x['to']} instead of {x['from']} (your usual swap)")
+        for x in usual["leaves_out"]:
+            if (idx := target(x)) is not None:
+                name = s.recipe.ingredients[idx].name
+                attempt(lambda name=name: s.remove_ingredient(name), f"no {x} (you usually leave it out)")
+        for kind, items in (("more", usual["more"]), ("less", usual["less"])):
+            for x in items:
+                if (idx := target(x)) is not None:
+                    name = s.recipe.ingredients[idx].name
+                    attempt(lambda name=name, kind=kind: s.change_amount(name, kind),
+                            f"{kind} {x} (you usually like {kind})")
+        for x in usual["adds"]:  # left to the writer (no amount or step to add it at); claimed if it's there
+            if s.find_ingredient_words(x) is not None:
+                done.append(f"with {x} (you usually add it)")
+        return done
 
     def _remember(self, a: RememberArgs) -> dict:
         if self.prefs is None:
