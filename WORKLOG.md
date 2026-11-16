@@ -106,7 +106,7 @@ given for mid-recipe additions; "usually adds" isn't offered for book
 recipes; a failed keep-warm ping waits 15 minutes to retry; "what's in the
 next step" may be read from the recipe as a peek.
 
-Checked: 31 new tests (each seen failing first), full suite **531 passed**.
+Checked: every fix has a test that was seen failing first; the suite went from 404 to **531 passed**.
 README updated (what it learns, mid-recipe changes, understanding test,
 results).
 
