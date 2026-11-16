@@ -251,3 +251,28 @@ def parse_ingredient_line(line: str) -> Ingredient:
     name = text.strip(" ,") or line.strip()
     return Ingredient(name=name, quantity=quantity, unit=unit.lower() if unit else None,
                       note=", ".join(n for n in notes if n) or None, original=" ".join(line.split()))
+
+
+# ---------------------------------------------------------------- ingredient words
+# Words that don't name an ingredient ("some of the peas").
+_FILLER_WORDS = {"the", "a", "an", "some", "of", "any", "my", "this", "that", "few", "bit", "little", "and", "or"}
+# Spellings of the same thing, after plurals are removed.
+_SAME_WORD = {"chilly": "chilli", "chili": "chilli", "chile": "chilli", "chily": "chilli", "leave": "leaf",
+              "loave": "loaf", "halve": "half", "yoghurt": "yogurt", "coriandre": "coriander"}
+
+
+def stem_word(w: str) -> str:
+    """'chillies' -> 'chilli', 'leaves' -> 'leaf', 'tomatoes' -> 'tomato', 'onions' -> 'onion'."""
+    w = w.lower()
+    if w.endswith("ies") and len(w) > 4:
+        w = w[:-3] + "y"
+    elif w.endswith(("ches", "shes", "xes", "oes")):
+        w = w[:-2]
+    elif w.endswith("s") and not w.endswith(("ss", "us")) and len(w) > 3:
+        w = w[:-1]
+    return _SAME_WORD.get(w, w)
+
+
+def ingredient_words(text: str) -> list[str]:
+    """The words that name an ingredient, stemmed, in order."""
+    return [stem_word(w) for w in re.findall(r"[a-z]+", text.lower()) if w not in _FILLER_WORDS]

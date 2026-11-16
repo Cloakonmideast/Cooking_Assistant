@@ -18,30 +18,17 @@ from typing import Callable, Optional
 
 import re
 
-from .recipe import Ingredient, Recipe, Step, format_minutes, parse_ingredient_line
+from .recipe import Ingredient, Recipe, Step, format_minutes, ingredient_words, parse_ingredient_line
 
 # Words that don't identify an ingredient on their own ("cumin seeds" is found by "cumin").
-_FILLER_WORDS = {"the", "a", "an", "some", "of", "any", "my", "this", "that", "few", "bit", "little"}
-_GENERIC_WORDS = {"seed", "powder", "leaf", "leave", "oil", "sauce", "paste", "nut", "fresh", "ground", "whole",
+_GENERIC_WORDS = {"seed", "powder", "leaf", "oil", "sauce", "paste", "nut", "fresh", "ground", "whole",
                   "chopped", "dried", "green", "red", "white", "black", "large", "small"}
 # "double the garlic", "less salt": multipliers for change_amount.
 AMOUNT_WORDS = {"double": 2.0, "twice": 2.0, "triple": 3.0, "half": 0.5, "halve": 0.5,
                 "more": 1.5, "extra": 1.5, "less": 0.5}
 
 
-def _word_set(text: str) -> list[str]:
-    out = []
-    for w in re.findall(r"[a-z]+", text.lower()):
-        if w in _FILLER_WORDS:
-            continue
-        if w.endswith("ies") and len(w) > 4:
-            w = w[:-3] + "y"
-        elif w.endswith(("ches", "shes", "oes")):
-            w = w[:-2]
-        elif w.endswith("s") and not w.endswith("ss") and len(w) > 3:
-            w = w[:-1]
-        out.append(w)
-    return out
+_word_set = ingredient_words
 
 
 class InvalidTransition(RuntimeError):
@@ -227,33 +214,49 @@ class CookingSession:
         return {**record, "line": new.describe(self.scale_factor)}
 
     # -- changes asked for mid-recipe (change_recipe) -----------------------
-    def find_ingredient_words(self, query: str) -> Optional[int]:
-        """Whole-word match: "cumin" finds "cumin seeds", "ice" doesn't find "rice"."""
+    def find_ingredient_candidates(self, query: str) -> list[int]:
+        """Whole-word matches, plurals and spellings folded: "cumin" finds "cumin
+        seeds", "chilli" finds "green chillies", "ice" doesn't find "rice". An
+        exact name wins; otherwise every ingredient that fits is returned."""
         recipe = self._require_recipe()
         q = _word_set(query)
         if not q:
-            return None
+            return []
         names = [_word_set(i.name) for i in recipe.ingredients]
-        for i, n in enumerate(names):
-            if n == q:
-                return i
-        for i, n in enumerate(names):
-            if set(q) <= set(n) or (n and set(n) <= set(q)):
-                return i
-        return None
+        exact = [i for i, n in enumerate(names) if n == q]
+        if exact:
+            return exact[:1]
+        within = [i for i, n in enumerate(names) if set(q) <= set(n)]
+        if within:
+            return within
+        # "salt and pepper": every ingredient sharing a telling word, so the cook is asked which
+        telling = set(q) - _GENERIC_WORDS
+        return [i for i, n in enumerate(names) if n and (set(n) <= set(q) or telling & set(n))]
+
+    def find_ingredient_words(self, query: str) -> Optional[int]:
+        """The one ingredient the words name, or None (none, or more than one)."""
+        found = self.find_ingredient_candidates(query)
+        return found[0] if len(found) == 1 else None
 
     def _require_ingredient(self, query: str) -> int:
-        idx = self.find_ingredient_words(query)
-        if idx is None:
-            names = ", ".join(i.name for i in self._require_recipe().ingredients)
+        recipe = self._require_recipe()
+        found = self.find_ingredient_candidates(query)
+        if not found:
+            names = ", ".join(i.name for i in recipe.ingredients)
             raise InvalidTransition(f"I can't find {query} in this recipe. Ingredients are: {names}.")
-        return idx
+        if len(found) > 1:
+            raise InvalidTransition(f"Which one: {', '.join(recipe.ingredients[i].name for i in found)}?")
+        return found[0]
 
     def steps_mentioning(self, name: str) -> list[dict]:
         """Steps from the current one on that mention the ingredient, so the
         assistant can rewrite them (steps are read out word for word)."""
         recipe = self._require_recipe()
-        keys = {w for w in _word_set(name) if w not in _GENERIC_WORDS} or set(_word_set(name))
+        words = _word_set(name)
+        keys = {w for w in words if w not in _GENERIC_WORDS} or set(words)
+        # "olive oil" is "the oil" in a step when no other ingredient is an oil
+        if words and sum(1 for i in recipe.ingredients if _word_set(i.name)[-1:] == words[-1:]) <= 1:
+            keys.add(words[-1])
         first = self.step_index if self.phase is CookingPhase.COOKING else 0
         out = []
         for n, step in enumerate(recipe.steps[first:], start=first + 1):

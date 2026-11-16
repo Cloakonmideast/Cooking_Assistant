@@ -9,7 +9,7 @@ from cooking_agent.preferences import PreferenceStore
 from cooking_agent.providers.base import ToolCall
 from cooking_agent.providers.fake import QueueSTT, ScriptedLLM, ToneTTS
 from cooking_agent.recipe import Recipe, Step, parse_ingredient_line
-from cooking_agent.state import CookingPhase, CookingSession
+from cooking_agent.state import CookingPhase, CookingSession, InvalidTransition
 from cooking_agent.timers import TimerManager
 from cooking_agent.tools import ToolBox
 
@@ -247,3 +247,40 @@ def test_ollama_asks_for_tool_shaped_history():
     from cooking_agent.providers.ollama import OllamaLLM
 
     assert OllamaLLM(model="qwen3:8b", client=object()).tool_history is True
+
+
+# ------------------------------------------------------------ review fixes: matching (I5, I6)
+def _session(*names, steps=("Cook it.",)):
+    s = CookingSession()
+    s.load_recipe(Recipe.model_validate({"title": "T", "servings": 2,
+                                         "ingredients": [{"name": n, "quantity": 1} for n in names],
+                                         "steps": [{"instruction": t} for t in steps]}))
+    return s
+
+
+@pytest.mark.parametrize("said", ["chilli", "chili", "chillies", "the green chilies", "green chilli"])
+def test_chilli_spellings_and_plurals_match(said):
+    s = _session("green chillies", "onion")
+    assert s.remove_ingredient(said)["ingredient"] == "green chillies"
+
+
+def test_leaf_and_leaves_match():
+    assert _session("bay leaves", "rice").remove_ingredient("bay leaf")["ingredient"] == "bay leaves"
+    assert _session("bay leaf", "rice").remove_ingredient("the bay leaves")["ingredient"] == "bay leaf"
+
+
+def test_steps_found_by_other_spellings_and_by_the_head_noun():
+    s = _session("green chillies", "olive oil", "rice",
+                 steps=("Heat the oil.", "Add the chilli and fry.", "Add the rice."))
+    assert [x["step_number"] for x in s.steps_mentioning("green chillies")] == [2]
+    assert [x["step_number"] for x in s.steps_mentioning("olive oil")] == [1]
+
+
+def test_ambiguous_ingredient_asks_which():
+    s = _session("rice flour", "basmati rice", "salt", "black pepper")
+    with pytest.raises(InvalidTransition, match="Which one.*rice flour.*basmati rice"):
+        s.remove_ingredient("rice")
+    with pytest.raises(InvalidTransition, match="Which one"):
+        s.remove_ingredient("salt and pepper")
+    assert s.remove_ingredient("basmati")["ingredient"] == "basmati rice"
+    assert s.remove_ingredient("rice flour")["ingredient"] == "rice flour"
