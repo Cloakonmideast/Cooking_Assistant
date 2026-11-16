@@ -26,6 +26,7 @@ from .preferences import (CATEGORIES, PreferenceStore, describe_for_recipe, diet
 from .recipe_store import RecipeStore
 from .state import Awaiting, CookingPhase, CookingSession, InvalidTransition, RecipeDraft
 from .timers import TimerError, TimerManager
+from .utterance import asks_permission, is_question
 
 READY_QUESTION = "Are you ready for the next step?"
 STEP_TOOLS = {"next_step", "previous_step", "repeat_step"}
@@ -196,6 +197,7 @@ class ToolBox:
         self._request = ""  # what the cook asked for when the recipe was loaded (dish + constraints)
         self._cook_recorded = True  # nothing loaded yet, nothing to record
         self.end_requested = False
+        self.utterance = ""  # what the cook said this turn (set by the agent)
         self._tools: dict[str, Tool] = {}
         for tool in self._build():
             self._tools[tool.name] = tool
@@ -261,6 +263,9 @@ class ToolBox:
                 return f"Do you want me to start a timer for {format_minutes(s.timer_offer['minutes'])}?"
             return self._ask_ready()
         timer_answered = any(r.name in ("start_step_timer", "set_timer") for r in ok)
+        if s.awaiting is Awaiting.TIMER and not results and s.timer_offer and is_question(self.utterance):
+            # "why do we soak it?" isn't an answer to the timer offer: ask it again
+            return f"Do you want me to start a timer for {format_minutes(s.timer_offer['minutes'])}?"
         if s.awaiting is Awaiting.TIMER and (timer_answered or not results):
             if s.timer_offer and timer_answered:  # cook chose their own timer instead
                 s.timed_steps.add(s.timer_offer["step_number"])
@@ -628,6 +633,10 @@ class ToolBox:
 
     def _change_recipe(self, a: ChangeRecipeArgs) -> dict:
         s = self.session
+        if asks_permission(self.utterance):
+            # "could I leave out the garlic?" asks whether, not to: answer, offer, don't change or learn
+            return {"not_changed": True, "note": "The cook only asked whether they could. Answer the question, "
+                    "then offer to make the change; make it only if they say yes."}
         if a.action == "change_step":
             return s.change_step(a.step_number, a.text or "")
         if not a.ingredient:

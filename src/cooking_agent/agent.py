@@ -498,6 +498,7 @@ class CookingAgent:
         assert m is not None
         q = out.queue
         raw = user_text if raw is None else raw
+        self.tools.utterance = raw
         committed: list[Message] = [Message("user", user_text)]
         spoken: list[str] = []
 
@@ -632,10 +633,16 @@ class CookingAgent:
         """Append the app's own question after a step ("start a timer?" /
         "ready for the next step?"). Done here rather than left to the model
         so the cook is asked every time, in the same words."""
+        model_asked = " ".join(spoken).rstrip().endswith("?")
         question = self.tools.follow_up(results)
+        if model_asked and question is None and not any(r.name in STEP_TOOLS for r in results):
+            # The model asked its own question ("want me to take it out?") and the app had
+            # nothing to ask: a "yes" now answers that, not the earlier "ready for the next step?".
+            self.session.awaiting = None
+            return
         if not question:
             return
-        if " ".join(spoken).rstrip().endswith("?"):
+        if model_asked:
             return  # the model already ended on a question; don't stack a second one
         emit(question)
         self.on_text("assistant", question)
