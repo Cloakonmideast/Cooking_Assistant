@@ -447,11 +447,9 @@ def _safe(profile: dict, items: list[str], more: bool = False) -> list[str]:
     """Never tell the writer to prefer something the cook can't have ('paneer'
     + lactose intolerance, 'peanut oil' + peanut allergy, 'chicken' + vegetarian).
     With ``more`` (a learned "more" or "add"), also nothing a health condition
-    limits, and a "nuts" allergy covers peanuts too."""
+    limits."""
     diets = sorted(prefer_eggetarian(diets_in(" ".join(profile.get("diet", [])))) & DIETS.keys())
-    allergies = list(profile.get("allergy", []))
-    if any(allergen_words(a) == ALLERGEN_FAMILIES["nut"] for a in allergies):
-        allergies.append("peanuts")  # learned habits only; the main check keeps its own word lists
+    allergies = profile.get("allergy", [])
     bad = {c.ingredient for c in find_conflicts(items, allergies, profile.get("condition", []), diets=diets)}
     if more:
         conditions = " ".join(profile.get("condition", [])).lower()
@@ -484,7 +482,9 @@ def describe_for_recipe(profile: dict) -> str:
 
     lines = []
     if profile.get("allergy"):
-        lines.append(f"- ALLERGIES, never include, not even as garnish or optional: {', '.join(profile['allergy'])}.")
+        named = [f"{a} (including peanuts)" if allergen_words(a) == ALLERGEN_FAMILIES["nut"] else a
+                 for a in profile["allergy"]]
+        lines.append(f"- ALLERGIES, never include, not even as garnish or optional: {', '.join(named)}.")
     if profile.get("condition"):
         lines.append("- HEALTH CONDITIONS, treat as strict rules for every ingredient: "
                      + "; ".join(condition_hint(c) for c in profile["condition"]) + ".")

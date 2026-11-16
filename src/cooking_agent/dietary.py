@@ -34,8 +34,10 @@ _GLUTEN_FREE = ["rice", "gram", "chickpea", "corn", "maize", "almond", "coconut"
 
 # allergy word -> ingredient words it covers
 ALLERGEN_FAMILIES: dict[str, list[str]] = {
+    # "nuts" covers peanuts too (most cooks who say "nuts" mean them); "tree nuts" doesn't
     "nut": ["almond", "cashew", "walnut", "pistachio", "pecan", "hazelnut", "macadamia", "brazil nut",
-            "pine nut", "chironji", "praline", "marzipan", "nut"],
+            "pine nut", "chironji", "praline", "marzipan", "nut",
+            "peanut", "groundnut", "monkey nut", "peanut butter"],
     "tree nut": ["almond", "cashew", "walnut", "pistachio", "pecan", "hazelnut", "macadamia", "brazil nut",
                  "pine nut", "chironji", "praline", "marzipan"],
     "peanut": ["peanut", "groundnut", "monkey nut", "peanut butter"],
@@ -166,9 +168,10 @@ def _allergen_key(allergy: str) -> str:
 def allergen_words(allergy: str) -> list[str]:
     """'tree nuts' -> almond, cashew, ...; 'peanuts' -> peanut, groundnut; 'kiwi' -> kiwi."""
     a = _allergen_key(allergy)
-    for key, words in ALLERGEN_FAMILIES.items():
+    # longest name first: "tree nuts" is the tree-nut family, not "nut" (which covers peanuts too)
+    for key in sorted(ALLERGEN_FAMILIES, key=len, reverse=True):
         if a == key or a.endswith(" " + key):
-            return words
+            return ALLERGEN_FAMILIES[key]
     return [a] if a else []
 
 

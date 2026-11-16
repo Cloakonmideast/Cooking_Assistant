@@ -380,7 +380,8 @@ said, it tells you (only what it actually changed).
 **Safety check.** Every recipe's ingredients are also checked in code against
 your allergies and conditions, with common families (tree nuts, shellfish,
 dairy, gluten...) and look-alikes that are fine (coconut milk, rice flour,
-nutmeg, eggplant). Vegetarian, eggetarian, eggless, vegan and Jain diets are
+nutmeg, eggplant). A "nuts" allergy covers peanuts too (peanut oil, groundnuts,
+peanut butter); "tree nuts" covers tree nuts only. Vegetarian, eggetarian, eggless, vegan and Jain diets are
 checked the same way (vegetarian: no meat, fish, eggs, gelatin or meat stock;
 eggetarian: vegetarian but eggs are fine, also understood as "vegetarian but I
 eat eggs", "eggitarian" or "I eat eggs but no meat"; eggless: no eggs; vegan:

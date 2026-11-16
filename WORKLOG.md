@@ -5,6 +5,74 @@ says what was done, why, and how it was checked.
 
 ---
 
+## 2026-11-16 — "nuts" covers peanuts; old backup deleted; docs and tests no longer tracked
+
+* **A "nuts" allergy now covers peanuts** in the main safety check (peanut,
+  groundnut, monkey nut, peanut butter), not only for learned habits. The
+  recipe writer is told "nuts (including peanuts)". Found while doing it:
+  "tree nuts" was being matched to the "nut" family (its name ends in "nut"),
+  so allergy names are now matched longest first and "tree nuts" stays tree
+  nuts only. The habit-only special case in `_safe` was removed (the main
+  lists cover it). Checked: new tests in `test_dietary_safety.py` (nuts /
+  "nut allergy" flag peanut oil, groundnuts, peanut butter, not nutmeg,
+  coconut or butternut squash; tree nuts doesn't flag peanut oil; the writer
+  line; a satay for a nut allergy is sent back once), each seen failing
+  first; suite 607 passed.
+* **Deleted the backup of the rewritten history** (`refs/original` for
+  `local-model` and `windows-py311-fixes`), as asked. Six older commits with
+  a Claude co-author line remain: they're on `main` and already on GitHub
+  from before this work, so removing them would need a rewrite of `main` and
+  a force push. Not done.
+* **`docs/` and `tests/` added to `.gitignore`** and removed from git's
+  tracking (`git rm --cached`), as asked; the files stay on disk and the
+  plan file and tests keep being updated there. Earlier commits still have
+  them. Checked with `git check-ignore`.
+
+---
+
+## 2026-11-16 — A habit isn't applied to a dish built around that ingredient
+
+Asked for by the cook: with a "leave out cashews" habit, a kaju curry lost its
+cashews. Now the dish name is checked (English and common Indian names: kaju,
+aloo, palak, jeera, murgh...; only the dish name, so "pulao with cashews"
+isn't a cashew dish; "X-free" ignored). A leave-out or swap of the dish's
+main ingredient isn't given to the recipe writer or made in code. The app
+says the reply itself ("Here's Kaju Curry for 2.") and asks: "Kaju Curry is
+built around cashews, so I kept them in, though you usually leave them out.
+You could use coconut milk instead, or make coconut curry. I'd go with
+coconut milk. Shall I, or keep the cashews?". The options come from one
+structured model call and are dropped if the cook can't have them, if they're
+the same thing, already in the recipe, or a dish built around it too; with
+none, it asks "Shall I leave them out anyway, or keep them?". A usual swap's
+option is the usual replacement ("Shall I use butter anyway, or keep the
+ghee?"). The answer is handled by the app: yes / your pick, keep / no, leave
+them out, first / second / the other one, or naming an option; questions and
+anything else go to the model. "More"/"less" habits still apply (ruling:
+"less chilli" in a chilli paneer is still what the cook wants).
+
+Why in code: told in the prompt to explain and suggest, qwen3 said "I kept
+the cashews" with no options in 3 of 3 runs and then acted wrongly on the
+answer ("Leave the cashews out" without changing anything; changed the
+cashew amount). Also found on the real model: with optional fields the
+options call returned empty strings 3 of 3 (now required); the model talked
+about it before the app's question ("The app will ask...", "I kept the
+cashews as you usually include them"), so the app says the reply when it will
+ask (warnings still left to the model); the writer turned "kaju" into almonds
+in 2 of 8 runs, so it's now told "In the dish name, kaju means cashew." (8 of
+8 right after); "one" is turned into "1" before matching, so "the first one"
+didn't match; a "yes" swapped in coconut milk the recipe already had (two
+lines), so options already in it are dropped.
+
+Checked: `tests/test_built_around.py` (51 tests, each seen failing first),
+suite 601 then; on qwen3: kaju curry kept and asked 8/8, "yes", "go with the
+one you'd pick", "no, keep them", "keep the cashews, that's fine" and "use
+the other option instead" each did the right thing; diet test 10/10 (2
+rewrites) after the writer prompt change. The assistant's own system prompt
+is unchanged (a prompt line was tried and reverted), so the routing and
+understanding results stand. Fable is running a separate test pass.
+
+---
+
 ## 2026-11-16 — Phase 2, Task 14: Fable review and fixes
 
 A Fable reviewer read all of Phase 2 and probed it on the real qwen3:8b.
