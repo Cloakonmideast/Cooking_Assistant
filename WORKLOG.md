@@ -5,6 +5,34 @@ says what was done, why, and how it was checked.
 
 ---
 
+## 2026-11-16 — Phase 2, Task 11: keep the model loaded
+
+* While `run` (voice) or `chat` is going, a background task pings the model
+  (`llm.warmup()`) after **15 minutes** without it being used, and once
+  about **a minute before each timer ends**, so the reply after a long simmer
+  doesn't wait for Ollama to load the model again. `AgentConfig`:
+  `keep_warm_every_s=900`, `keep_warm_before_timer_s=60`,
+  `keep_warm_poll_s=5` (0 turns it off).
+* The decision is a pure function, `keep_warm_due`, tested without sleeping.
+  Timers are keyed by name and end time, so a timer set again under the same
+  name gets its own ping. The loop checks every 5 seconds, so timers set after
+  it last looked (including by instant commands) are noticed. Failed pings
+  are logged, never spoken. LLMs without `warmup` (Gemini, the test fakes)
+  skip it.
+* **Bug found and fixed while checking this on the real Ollama:** the
+  warm-up (also used at start-up since Phase 1) loaded the model with
+  Ollama's default 4096-token context, while chat asks for 8192, so Ollama
+  reloaded the model on the next reply. Measured: first reply after a ping
+  **5.7 s**, then 0.32 s. The warm-up now sends the same options as chat;
+  after the fix the reply right after a ping took **0.57 s** and
+  `ollama ps` shows 8192 context, 100% GPU, "29 minutes from now".
+* README: what keeping it loaded means for graphics memory.
+* Checked: 10 new tests in `tests/test_keep_warm.py` (they failed first: the
+  function didn't exist; the context-size test failed on the old warm-up);
+  full suite 372 passed.
+
+---
+
 ## 2026-11-16 — Phase 2, Task 10: learn and use what the cook changes
 
 * **Saved every time** (`preferences.py`, new `adjustments` table): each swap

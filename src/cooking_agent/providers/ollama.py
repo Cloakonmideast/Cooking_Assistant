@@ -68,7 +68,8 @@ class OllamaLLM:
     async def warmup(self) -> None:
         """Load the model into memory now, so the first reply doesn't wait for
         it (the first load can take about a minute)."""
-        await self.client.generate(model=self.model, prompt="", keep_alive=KEEP_ALIVE)
+        # Same options as chat: Ollama reloads a model whose num_ctx changes.
+        await self.client.generate(model=self.model, prompt="", keep_alive=KEEP_ALIVE, options=self._options())
 
     # ------------------------------------------------------------ conversion
     @staticmethod

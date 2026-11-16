@@ -100,6 +100,7 @@ async def _chat(args: argparse.Namespace) -> int:
     await _warm_up_llm(llm)
     loop = asyncio.get_running_loop()
     timers_task = asyncio.create_task(agent._announcer())  # timer announcements in text mode
+    warm_task = asyncio.create_task(agent.keep_warm())  # keep the local model loaded between messages
     print(f"text mode (llm={llm.name}). Type a message, empty line or Ctrl+D to quit.")
     if prefs.needs_setup():
         agent.begin_setup()
@@ -115,6 +116,7 @@ async def _chat(args: argparse.Namespace) -> int:
                   f"tools: {', '.join(last['tool_calls']) or 'none'})")
     finally:
         timers_task.cancel()
+        warm_task.cancel()
         await agent.timers.aclose()
     return 0
 

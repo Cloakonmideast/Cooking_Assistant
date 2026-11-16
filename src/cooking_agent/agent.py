@@ -177,6 +177,25 @@ class AgentConfig:
     barge_in_ratio: float = 1.5
     echo_tail_ms: int = 250
     instant_commands: bool = True  # handle everyday commands without the LLM (commands.py)
+    # Keep a local model loaded (llm.warmup): every this many seconds, and once
+    # this long before each timer ends, so the answer after a long simmer isn't
+    # a cold load. 0 turns it off.
+    keep_warm_every_s: float = 900.0
+    keep_warm_before_timer_s: float = 60.0
+    keep_warm_poll_s: float = 5.0
+
+
+def keep_warm_due(now: float, last_ping: float, deadlines: dict[str, float], pinged: set[tuple[str, float]],
+                  every_s: float, before_s: float) -> tuple[bool, set[tuple[str, float]]]:
+    """Whether to ping the model now, and the timers this ping covers.
+
+    Due when ``every_s`` has passed since the model was last used or pinged,
+    or when a running timer ends within ``before_s`` and hasn't had its ping
+    yet. Timers are keyed by (name, deadline), so a timer set again under the
+    same name gets a new ping.
+    """
+    keys = {(name, end) for name, end in deadlines.items() if end - now <= before_s and (name, end) not in pinged}
+    return (now - last_ping >= every_s or bool(keys)), keys
 
 
 @dataclass
@@ -222,12 +241,14 @@ class CookingAgent:
         self._question_pending = False  # asked this turn; becomes fresh once the whole reply was heard
         self._setup_fresh = False  # same, for the first-run allergies/diet question
         self._stopped = asyncio.Event()
+        self._last_llm_use = self.timers.now()  # for keep_warm: a real turn also keeps the model loaded
 
     # ================================================================ running
     async def run(self, frames: AsyncIterator[bytes],
                   speech_end_fn: Callable[[SttEvent], Optional[float]] | None = None) -> None:
         """Run until the STT stream ends or the user ends the session."""
         announcer = asyncio.create_task(self._announcer(), name="announcer")
+        warm = asyncio.create_task(self.keep_warm(), name="keep-warm")
         stt_iter = self.stt.stream(self.gate.process(frames))
         stop_wait = asyncio.create_task(self._stopped.wait())
         try:
@@ -254,13 +275,43 @@ class CookingAgent:
             stop_wait.cancel()
             await self._cancel_output()
             announcer.cancel()
+            warm.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await announcer
+            with contextlib.suppress(asyncio.CancelledError):
+                await warm
             await self.timers.aclose()
             with contextlib.suppress(Exception):
                 await stt_iter.aclose()
             if self.turn.state != TurnState.STOPPED:
                 self.turn.to(TurnState.STOPPED)
+
+    async def keep_warm(self) -> None:
+        """Ping the model so Ollama doesn't unload it during a long simmer
+        (see ``keep_warm_due``). Failures are logged, never spoken. Returns at
+        once if the LLM has no ``warmup`` or the interval is 0."""
+        warmup = getattr(self.llm, "warmup", None)
+        every = self.config.keep_warm_every_s
+        if warmup is None or every <= 0:
+            return
+        last_ping = self.timers.now()
+        pinged: set[tuple[str, float]] = set()
+        while True:
+            await asyncio.sleep(self.config.keep_warm_poll_s)
+            now = self.timers.now()
+            deadlines = self.timers.deadlines()
+            pinged &= set(deadlines.items())  # forget timers that ended or were cancelled
+            due, keys = keep_warm_due(now, max(last_ping, self._last_llm_use), deadlines, pinged, every,
+                                      self.config.keep_warm_before_timer_s)
+            pinged |= keys
+            if not due:
+                continue
+            last_ping = now
+            try:
+                await warmup()
+                log.debug("keep-warm ping (%s)", ", ".join(n for n, _ in keys) or "interval")
+            except Exception as e:  # Ollama stopped, etc.: the next real turn says so
+                log.warning("keep-warm ping failed: %s: %s", type(e).__name__, e)
 
     def begin_setup(self) -> bool:
         """First run: ask about allergies, conditions and diet. Spoken as soon
@@ -503,6 +554,7 @@ class CookingAgent:
         all_results: list[ToolResult] = []
         for _ in range(MAX_TOOL_ROUNDS):
             m.llm_rounds += 1
+            self._last_llm_use = self.timers.now()
             seg = SentenceSegmenter()
             calls = []
             reply: Optional[Message] = None

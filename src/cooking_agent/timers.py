@@ -86,6 +86,14 @@ class TimerManager:
             for t in sorted(self._timers.values(), key=lambda t: t.deadline)
         ]
 
+    def now(self) -> float:
+        """The clock deadlines are measured on."""
+        return self._clock()
+
+    def deadlines(self) -> dict[str, float]:
+        """Running timers and when each ends (on ``now()``'s clock)."""
+        return {t.name: t.deadline for t in self._timers.values()}
+
     def recently_finished(self) -> list[str]:
         return list(self._finished[-5:])
 

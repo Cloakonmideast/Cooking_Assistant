@@ -81,6 +81,12 @@ Ollama runs in the background after install. `cooking-agent diagnose` checks
 it. To use another model: `ollama pull <model>` and set `OLLAMA_MODEL` in
 `.env`.
 
+While the assistant is running it keeps the model loaded, so the answer
+after a long simmer isn't a cold start: it pings the model every 15 minutes
+of quiet and again about a minute before each timer ends. The model's graphics
+memory (about 6 GB) stays in use until you quit the assistant; Ollama frees
+it 30 minutes later.
+
 ### 3. Speech without Deepgram (optional, offline)
 
 Without a Deepgram key the voice mode uses free offline speech: Vosk to hear
