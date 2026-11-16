@@ -99,6 +99,7 @@ class CookingSession:
     timed_steps: set[int] = field(default_factory=set)  # step numbers whose timer was started
     draft: Optional[RecipeDraft] = None
     setup_pending: bool = False  # first-run question about allergies/conditions/diet is open
+    removed: list[str] = field(default_factory=list)  # ingredients the cook took out mid-recipe
 
     # -- recipe lifecycle -------------------------------------------------
     def load_recipe(self, recipe: Recipe) -> None:
@@ -110,6 +111,7 @@ class CookingSession:
         self.timer_offer = None
         self.awaiting = None
         self.timed_steps = set()
+        self.removed = []
 
     def _require_recipe(self) -> Recipe:
         if self.recipe is None:
@@ -156,7 +158,7 @@ class CookingSession:
         out: dict = {
             "step_number": self.step_index + 1,
             "total_steps": len(recipe.steps),
-            "instruction": step.instruction,
+            "instruction": self.step_text(self.step_index),
             "is_last_step": self.step_index == len(recipe.steps) - 1,
         }
         if step.timer_minutes and (self.step_index + 1) not in self.timed_steps:
@@ -249,21 +251,36 @@ class CookingSession:
             raise InvalidTransition(f"Which one: {', '.join(recipe.ingredients[i].name for i in found)}?")
         return found[0]
 
-    def steps_mentioning(self, name: str) -> list[dict]:
-        """Steps from the current one on that mention the ingredient, so the
-        assistant can rewrite them (steps are read out word for word)."""
+    def _mention_keys(self, name: str) -> set[str]:
         recipe = self._require_recipe()
         words = _word_set(name)
         keys = {w for w in words if w not in _GENERIC_WORDS} or set(words)
         # "olive oil" is "the oil" in a step when no other ingredient is an oil
         if words and sum(1 for i in recipe.ingredients if _word_set(i.name)[-1:] == words[-1:]) <= 1:
             keys.add(words[-1])
+        return keys
+
+    def steps_mentioning(self, name: str) -> list[dict]:
+        """Steps from the current one on that mention the ingredient."""
+        recipe = self._require_recipe()
+        keys = self._mention_keys(name)
         first = self.step_index if self.phase is CookingPhase.COOKING else 0
-        out = []
-        for n, step in enumerate(recipe.steps[first:], start=first + 1):
-            if keys & set(_word_set(step.instruction)):
-                out.append({"step_number": n, "instruction": step.instruction})
-        return out
+        return [{"step_number": n, "instruction": step.instruction}
+                for n, step in enumerate(recipe.steps[first:], start=first + 1)
+                if keys & set(_word_set(step.instruction))]
+
+    def step_text(self, index: int) -> str:
+        """A step as it is read out: its own words, plus a note for any
+        ingredient the cook took out or swapped since ("Leave out the mint
+        leaves.", "Use butter instead of ghee."). Steps are read word for
+        word, so this is what keeps them true after a change."""
+        recipe = self._require_recipe()
+        text = recipe.steps[index].instruction
+        words = set(_word_set(text))
+        notes = [f"Leave out the {name}." for name in self.removed if self._mention_keys(name) & words]
+        notes += [f"Use {sub['replacement']} instead of {sub['original']}." for sub in self.substitutions
+                  if self._mention_keys(sub["original"]) & words]
+        return " ".join([text, *notes])
 
     def remove_ingredient(self, query: str) -> dict:
         recipe = self._require_recipe()
@@ -271,8 +288,8 @@ class CookingSession:
         if len(recipe.ingredients) == 1:
             raise InvalidTransition("That's the only ingredient left, so I can't take it out.")
         removed = recipe.ingredients.pop(idx)
-        return {"removed": removed.describe(self.scale_factor), "ingredient": removed.name,
-                "steps_to_update": self.steps_mentioning(removed.name)}
+        self.removed.append(removed.name)
+        return {"removed": removed.describe(self.scale_factor), "ingredient": removed.name}
 
     def add_ingredient(self, line: str) -> dict:
         """``line`` is said at the current servings ("1 cup peas" for 4)."""
@@ -282,6 +299,8 @@ class CookingSession:
             ing = ing.model_copy(update={"quantity": ing.quantity / self.scale_factor})
         ing = ing.model_copy(update={"original": None})
         recipe.ingredients.append(ing)
+        added = set(_word_set(ing.name))
+        self.removed = [r for r in self.removed if not (self._mention_keys(r) & added)]  # put back
         return {"added": ing.describe(self.scale_factor), "ingredient": ing.name}
 
     def change_amount(self, query: str, amount: str) -> dict:
@@ -362,7 +381,7 @@ class CookingSession:
         current = self.step_index if self.phase is CookingPhase.COOKING else None
         for n, step in enumerate(recipe.steps):
             mark = "[current step] " if n == current else ""
-            lines.append(f"{n + 1}. {mark}{step.instruction}")
+            lines.append(f"{n + 1}. {mark}{self.step_text(n)}")
         return "\n".join(lines)
 
     def _find_ingredient(self, query: str) -> Optional[int]:

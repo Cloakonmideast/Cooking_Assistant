@@ -8,7 +8,7 @@ from cooking_agent.commands import match_command
 from cooking_agent.preferences import PreferenceStore
 from cooking_agent.providers.base import ToolCall
 from cooking_agent.providers.fake import QueueSTT, ScriptedLLM, ToneTTS
-from cooking_agent.recipe import Recipe, Step, parse_ingredient_line
+from cooking_agent.recipe import Ingredient, Recipe, Step, parse_ingredient_line
 from cooking_agent.state import CookingPhase, CookingSession, InvalidTransition
 from cooking_agent.timers import TimerManager
 from cooking_agent.tools import ToolBox
@@ -51,7 +51,7 @@ async def test_change_recipe_remove_add_amount_keeps_step(recipe):
     await on_step_2(tb)
     out = await call(tb, "change_recipe", action="remove_ingredient", ingredient="cumin")
     assert out["removed"] == "1 tsp cumin seeds"
-    assert out["steps_to_update"] == [{"step_number": 2, "instruction": "Heat ghee and add cumin seeds."}]
+    assert (await call(tb, "repeat_step"))["instruction"] == "Heat ghee and add cumin seeds. Leave out the cumin seeds."
     assert tb.session.step_index == 1
     out = await call(tb, "change_recipe", action="add_ingredient", ingredient="green peas", amount="1 cup")
     assert out["added"] == "1 cup green peas"
@@ -320,3 +320,46 @@ def test_more_cloves_adds_to_the_amount():
 def test_zero_amount_is_refused():
     with pytest.raises(InvalidTransition, match="leave it out"):
         _amounts().change_amount("garlic", "0")
+
+
+# ------------------------------------------------------------ review fixes: steps after a change (I1)
+def _mint():
+    s = CookingSession()
+    s.load_recipe(Recipe.model_validate({"title": "T", "servings": 2, "ingredients": [
+        {"name": "basmati rice", "quantity": 1, "unit": "cup"}, {"name": "ghee", "quantity": 1, "unit": "tbsp"},
+        {"name": "mint leaves", "quantity": 10}], "steps": [
+        {"instruction": "Heat the ghee."}, {"instruction": "Add the rice and cook."},
+        {"instruction": "Scatter the mint over the rice and serve."}]}))
+    return s
+
+
+def test_a_removed_ingredient_is_left_out_when_the_step_is_read():
+    s = _mint()
+    s.next_step()
+    out = s.remove_ingredient("mint")
+    assert "steps_to_update" not in out
+    s.next_step()
+    assert s.next_step()["instruction"] == "Scatter the mint over the rice and serve. Leave out the mint leaves."
+    assert "3. [current step] Scatter the mint over the rice and serve. Leave out the mint leaves." in s.recipe_text()
+
+
+def test_a_swapped_ingredient_is_named_when_the_step_is_read():
+    s = _mint()
+    s.substitute("ghee", Ingredient(name="butter"))
+    assert s.next_step()["instruction"] == "Heat the ghee. Use butter instead of ghee."
+
+
+def test_adding_it_back_or_a_new_recipe_clears_the_note():
+    s = _mint()
+    s.remove_ingredient("mint")
+    s.add_ingredient("10 mint leaves")
+    assert "Leave out" not in s.recipe_text()
+    s.remove_ingredient("mint")
+    s.load_recipe(_mint().recipe)
+    assert "Leave out" not in s.recipe_text()
+
+
+def test_prompt_no_longer_asks_the_model_to_rewrite_steps():
+    from cooking_agent.agent import SYSTEM_PROMPT
+
+    assert "steps_to_update" not in SYSTEM_PROMPT

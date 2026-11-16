@@ -94,9 +94,9 @@ change_recipe; to swap one ingredient for another, call \
 substitute_ingredient. "Make it less spicy" means change_amount less on the \
 chillies. Only change it when they ask for a change, not when they ask \
 whether they could.
-- If change_recipe returns steps_to_update, call change_recipe with \
-change_step for each of them in the same turn, rewriting the step without \
-the removed ingredient. Then confirm the change in one sentence.
+- The app itself tells the cook to leave out a removed ingredient, or use \
+the substitute, whenever a step mentions it, so don't rewrite steps for \
+that. Confirm the change in one sentence.
 - A change never moves the step: do not call next_step after it.
 
 Recipes:

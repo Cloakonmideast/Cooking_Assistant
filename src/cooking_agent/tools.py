@@ -635,8 +635,6 @@ class ToolBox:
         if a.action == "remove_ingredient":
             out = s.remove_ingredient(a.ingredient)
             self._record("remove", out["ingredient"])
-            if not out["steps_to_update"]:
-                del out["steps_to_update"]
             return out
         if a.action == "add_ingredient":
             out = s.add_ingredient(f"{a.amount} {a.ingredient}" if a.amount else a.ingredient)
