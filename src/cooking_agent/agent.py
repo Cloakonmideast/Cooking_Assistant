@@ -44,7 +44,7 @@ from .providers.base import (
     TTSProvider,
     TurnComplete,
 )
-from .preferences import PreferenceStore
+from .preferences import PreferenceStore, stated_diets
 from .recipe_store import RecipeStore
 from .segmenter import SentenceSegmenter
 from .state import CookingSession, TurnState, TurnStateMachine
@@ -499,6 +499,8 @@ class CookingAgent:
         q = out.queue
         raw = user_text if raw is None else raw
         self.tools.utterance = raw
+        if self.tools.prefs is not None and (diets := stated_diets(raw)):
+            self.tools.prefs.set_stated_diets(diets)  # "I'm vegetarian": saved whatever the model does
         committed: list[Message] = [Message("user", user_text)]
         spoken: list[str] = []
 

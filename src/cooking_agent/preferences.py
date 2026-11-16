@@ -103,6 +103,35 @@ def _eats_eggs(t: str) -> bool:
     return False
 
 
+# The diets that replace one another when the cook states a new one.
+DIET_FAMILY = {"vegetarian", "eggetarian", "vegan", "jain"}
+_DIET_WORD = (r"(?:vegetarians?|veg|veggie|vegans?|jains?|eggetarians?|eggitarians?|ovo[- ]vegetarians?)"
+              r"(?![a-z])")
+# "I'm a vegetarian", "we're vegan", "I've gone vegan", "I'm strictly jain": the cook about themselves,
+# a diet word right after (so "I'm making a vegetarian biryani" doesn't count).
+_STATED_DIET = re.compile(
+    r"(?:^|[,.;!?]\s*|(?<![a-z])(?:and|but|also|so)\s+)"
+    r"(?:i'?m|i am|we'?re|we are|i'?ve (?:gone|become|turned)|we'?ve (?:gone|become|turned)|"
+    r"i (?:have )?(?:gone|become|turned)|i follow|we follow|i'?m now)\s+"
+    r"(?:(?:a|an|now|strictly|pure|fully|mostly|also|totally|completely|basically|still|actually|"
+    r"a strict|a pure)\s+){0,3}" + _DIET_WORD)
+_EATS_EGGS_NO_MEAT = re.compile(r"(?:^|[,.;!?]\s*|(?<![a-z])(?:and|but)\s+)(?:i|we) (?:only )?eat eggs?(?![a-z])")
+_ONE_OFF = re.compile(r"(?<![a-z])(?:today|tonight|this time|for now|this week|this weekend|just for|on weekdays|"
+                      r"on weekends|sometimes|for lent)(?![a-z])")
+
+
+def stated_diets(text: Optional[str]) -> set[str]:
+    """Diets the cook says they follow ("I'm vegetarian but I eat eggs" ->
+    {"eggetarian"}); empty for requests, other people, negations and one-offs.
+    Saved in code because the model often said "I'll remember" without
+    saving (Phase 2 review)."""
+    t = _norm(text or "")
+    if not (_STATED_DIET.search(t) or _EATS_EGGS_NO_MEAT.search(t)) or _ONE_OFF.search(t):
+        return set()
+    sentence = re.split(r"[.!?]", t[(_STATED_DIET.search(t) or _EATS_EGGS_NO_MEAT.search(t)).start():] + ".")[0]
+    return diets_in(sentence) & DIET_FAMILY
+
+
 def diets_in(text: Optional[str]) -> set[str]:
     t = f" {_norm(text or '')} "
     found = _diet_words_in(t)
@@ -171,6 +200,18 @@ class PreferenceStore:
             (category, value, time.time()))
         self._db.commit()
         return cur.rowcount > 0
+
+    def set_stated_diets(self, diets: set[str]) -> None:
+        """Save diets the cook just stated; the newest replaces an older one
+        from the same family ("I'm vegetarian now, no eggs" after eggetarian)."""
+        if not diets:
+            return
+        for row in self.stated():
+            if row["category"] == "diet" and diets_in(row["value"]) & DIET_FAMILY:
+                self._db.execute("DELETE FROM preferences WHERE id = ?", (row["id"],))
+        self._db.commit()
+        for d in sorted(diets):
+            self.remember("diet", d)
 
     def forget(self, value: str) -> list[dict]:
         """Remove stated preferences mentioning ``value`` (any category)."""
@@ -348,7 +389,10 @@ def describe_for_recipe(profile: dict) -> str:
         lines.append("- HEALTH CONDITIONS, treat as strict rules for every ingredient: "
                      + "; ".join(condition_hint(c) for c in profile["condition"]) + ".")
     if profile.get("diet"):
-        lines.append(f"- Diet: {'; '.join(_diet_rule(d) for d in profile['diet'])}.")
+        # one rule per diet in effect: "vegetarian" and "eggetarian" both stored means eggetarian
+        known = sorted(prefer_eggetarian(diets_in(" ".join(profile["diet"]))) & DIETS.keys())
+        other = [d for d in profile["diet"] if not diets_in(d) & DIETS.keys()]
+        lines.append(f"- Diet: {'; '.join([diet_hint(d) for d in known] + other)}.")
     if profile.get("dislike"):
         lines.append(f"- Leave out (dislikes): {', '.join(profile['dislike'])}.")
     if profile.get("like"):
