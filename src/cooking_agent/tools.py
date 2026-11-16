@@ -13,6 +13,7 @@ can explain the problem to the user in its own words.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Literal, Optional, Type
 
@@ -23,6 +24,7 @@ from .recipe import Ingredient, Recipe, Step, format_minutes, ingredient_words, 
 from .dietary import DIETS, find_conflicts, requested_words
 from .preferences import (CATEGORIES, PreferenceStore, describe_for_recipe, diets_in, habit_key,
                           prefer_eggetarian, usual_changes)
+from .dishes import built_around, main_words, name_glossary
 from .recipe_store import RecipeStore
 from .state import Awaiting, CookingPhase, CookingSession, InvalidTransition, RecipeDraft
 from .timers import TimerError, TimerManager
@@ -30,6 +32,22 @@ from .utterance import asks_permission, is_question
 
 READY_QUESTION = "Are you ready for the next step?"
 STEP_TOOLS = {"next_step", "previous_step", "repeat_step"}
+
+OPTIONS_PROMPT = (
+    "A cook asked for {title}, a dish built around {ingredient}, but they usually leave {ingredient} out. "
+    "Suggest one ingredient they could use in place of {ingredient} in this dish, and one similar dish "
+    "that doesn't need {ingredient}. Then pick the one you'd recommend. A few words each, no explanation.\n"
+    "{profile}"
+)
+
+
+class BetterOptions(BaseModel):
+    """Alternatives when a dish is built around something the cook usually leaves out."""
+
+    # required, with no "empty if none": given a default of "", qwen3 returned "" for both (3 of 3)
+    use_instead: str = Field(description="One ingredient to use in its place in this dish, e.g. 'almonds'.")
+    similar_dish: str = Field(description="A similar dish that doesn't need it, e.g. 'paneer butter masala'.")
+    pick: Literal["use_instead", "similar_dish"]
 
 # Tools offered to the LLM per phase (ToolBox.specs_for).
 ALWAYS_TOOLS = {"get_recipe", "list_saved_recipes", "start_recipe_dictation", "set_timer", "cancel_timer",
@@ -174,6 +192,7 @@ class Tool:
 
 RECIPE_PROMPT = (
     "Write a home-cook recipe for: {dish}.\n"
+    "{glossary}"
     "Servings: {servings}.\n"
     "{constraints}"
     "{profile}"
@@ -261,6 +280,13 @@ class ToolBox:
         """
         s = self.session
         ok = [r for r in results if "error" not in r.result]
+        if s.dish_choice is not None:
+            if any(r.name == "get_recipe" for r in ok):
+                s.awaiting = Awaiting.DISH_CHOICE
+                return s.dish_choice["question"]
+            s.dish_choice = None  # answered, or the cook moved on to something else
+            if s.awaiting is Awaiting.DISH_CHOICE:
+                s.awaiting = None
         step = next((r.result for r in reversed(ok) if r.name in STEP_TOOLS), None)
         if step is not None:
             if "instruction" not in step:  # next_step past the end: finished
@@ -377,12 +403,20 @@ class ToolBox:
             warnings = self._warnings(saved.recipe, request) + self._learned_diet_warnings(saved.recipe, request)
             if warnings:
                 out["warnings"] = warnings  # their own recipe: warn, never change it silently
-            if usual := self._usual_changes_for_saved():
-                out["your_usual_changes"] = usual  # offered, made only if the cook says so
-        else:
             profile = self._profile()
+            around = self._built_around([a.dish, saved.recipe.title], profile)
+            if usual := self._usual_changes_for_saved(self._without(profile, around)):
+                out["your_usual_changes"] = usual  # offered, made only if the cook says so
+            if kept := await self._kept(around, profile):
+                out["built_around"] = kept
+        else:
+            full_profile = self._profile()
+            # "leave out cashews" isn't for a kaju curry: neither the writer nor the code applies it
+            around = self._built_around([a.dish], full_profile)
+            profile = self._without(full_profile, around)
             prompt = RECIPE_PROMPT.format(
                 dish=a.dish,
+                glossary=name_glossary(a.dish),
                 servings=servings or 4,
                 constraints=f"Constraints: {a.constraints}.\n" if a.constraints else "",
                 profile=describe_for_recipe(profile),
@@ -399,6 +433,8 @@ class ToolBox:
             applied = self._applied(profile) + habits
             if applied:
                 out["tailored_to"] = applied
+            if kept := await self._kept(around, full_profile):
+                out["built_around"] = kept
         if servings_learned:
             out["servings_note"] = f"made for {servings}, the number you usually cook for"
         return out
@@ -453,9 +489,90 @@ class ToolBox:
         return [f"has {c.ingredient}, and you usually cook {c.reason.removesuffix(' diet')}"
                 for c in find_conflicts([i.name for i in recipe.ingredients], diets=soft, diet_allowed=allowed)]
 
-    def _usual_changes_for_saved(self) -> list[str]:
+    @staticmethod
+    def _built_around(dishes: list[str], profile: dict) -> list[dict]:
+        """The cook's usual leave-outs and swaps of an ingredient the dish is
+        named after ("leave out cashews" for a kaju curry)."""
+        usual = usual_changes(profile)
+        named = lambda x: any(d and built_around(d, x) for d in dishes)  # noqa: E731
+        out = [{"ingredient": s["from"], "your_usual_change": f"swap {s['from']} for {s['to']}",
+                "usual_swap": s["to"]} for s in usual["swaps"] if named(s["from"])]
+        out += [{"ingredient": x, "your_usual_change": f"leave out {x}"} for x in usual["leaves_out"] if named(x)]
+        return out
+
+    @staticmethod
+    def _without(profile: dict, around: list[dict]) -> dict:
+        """The profile minus the usual changes in ``around``."""
+        if not around:
+            return profile
+        skip = {n["ingredient"] for n in around}
+        learned = dict(profile.get("learned_from_history", {}))
+        learned["usually_swaps"] = [s for s in learned.get("usually_swaps", []) if s["from"] not in skip]
+        learned["usually_leaves_out"] = [x for x in learned.get("usually_leaves_out", []) if x not in skip]
+        return profile | {"learned_from_history": {k: v for k, v in learned.items() if v}}
+
+    async def _kept(self, around: list[dict], profile: dict) -> list[dict]:
+        """The usual changes not made because the dish is built around the
+        ingredient (and the recipe has it). For the first one, the app asks the
+        cook itself after the reply (``session.dish_choice``): the model was
+        told to and didn't (qwen3 said "I kept the cashews" with no options in
+        3 of 3, then acted on the answer wrongly)."""
+        r = self.session.recipe
+        kept = [n for n in around
+                if any(main_words(n["ingredient"]) <= set(ingredient_words(i.name)) for i in r.ingredients)]
+        if kept:
+            self.session.dish_choice = await self._dish_choice(kept[0], profile)
+        return [n | {"note": "kept on purpose; the app asked the cook whether to change it"} for n in kept]
+
+    async def _dish_choice(self, note: dict, profile: dict) -> dict:
+        # "Kaju Curry (Cashew Curry) - 2 Servings", as qwen3 titled it, is said as "Kaju Curry"
+        name = re.sub(r"\s*\([^)]*\)|\s*[-–:]\s*(?:for\s+)?\d+\s+servings?\b.*$", "", self.session.recipe.title,
+                      flags=re.IGNORECASE).strip() or self.session.recipe.title
+        x = note["ingredient"]
+        them = "them" if x.endswith("s") else "it"
+        if "usual_swap" in note:  # the usual swap is the option
+            to = note["usual_swap"]
+            return {"name": name, "ingredient": x, "use_instead": to, "similar_dish": None, "pick": "use_instead",
+                    "question": f"{name} is built around {x}, so I kept {them} in, though you usually use "
+                                f"{to} instead. Shall I use {to} anyway, or keep the {x}?"}
+        kept = f"{name} is built around {x}, so I kept {them} in, though you usually leave {them} out."
+        use, dish, pick = await self._better_options(x, name, profile)
+        if use and dish:
+            mine = f"I'd go with {use}." if pick == "use_instead" else f"I'd make {dish} instead."
+            offer = f"You could use {use} instead, or make {dish}. {mine} Shall I, or keep the {x}?"
+        elif use:
+            offer = f"I'd go with {use} instead. Shall I, or keep the {x}?"
+        elif dish:
+            offer = f"I'd make {dish} instead. Shall I, or keep the {x}?"
+        else:
+            offer = f"Shall I leave {them} out anyway, or keep {them}?"
+        return {"name": name, "ingredient": x, "use_instead": use, "similar_dish": dish, "pick": pick,
+                "question": f"{kept} {offer}"}
+
+    async def _better_options(self, x: str, title: str, profile: dict
+                              ) -> tuple[Optional[str], Optional[str], str]:
+        """(something to use instead, a similar dish without it, which to pick);
+        anything the cook can't have, or that is the same thing again, is dropped."""
+        prompt = OPTIONS_PROMPT.format(title=title, ingredient=x, profile=describe_for_recipe(profile))
+        try:
+            o = await self.llm.generate_structured(prompt, BetterOptions)
+        except Exception as e:  # the recipe is still fine: ask the plain question instead
+            log.warning("no alternatives for %s in %s: %s", x, title, e)
+            return None, None, "leave_out"
+        use, dish = o.use_instead.strip().lower() or None, o.similar_dish.strip().lower() or None
+        has = lambda name: any(main_words(name) <= set(ingredient_words(i.name))  # noqa: E731
+                               for i in self.session.recipe.ingredients)
+        if use and (self._conflicts([use]) or main_words(x) <= set(ingredient_words(use)) or has(use)):
+            use = None  # can't have it, the same thing again, or already in the recipe (two coconut milk lines)
+        if dish and (self._conflicts([dish]) or built_around(dish, x)):
+            dish = None
+        options = {"use_instead": use, "similar_dish": dish}
+        pick = o.pick if options[o.pick] else next((k for k, v in options.items() if v), "leave_out")
+        return use, dish, pick
+
+    def _usual_changes_for_saved(self, profile: dict) -> list[str]:
         """The cook's usual changes that apply to the loaded recipe-book recipe."""
-        usual = usual_changes(self._profile())
+        usual = usual_changes(profile)
         s = self.session
         has = lambda name: s.find_ingredient_words(name) is not None  # noqa: E731
         return ([f"swap {x['from']} for {x['to']}" for x in usual["swaps"] if has(x["from"])]

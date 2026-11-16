@@ -47,7 +47,7 @@ from .providers.base import (
 from .preferences import PreferenceStore, stated_diets
 from .recipe_store import RecipeStore
 from .segmenter import SentenceSegmenter
-from .state import CookingSession, TurnState, TurnStateMachine
+from .state import Awaiting, CookingSession, TurnState, TurnStateMachine
 from .timers import TimerManager
 from .tools import STEP_TOOLS, ToolBox
 
@@ -619,7 +619,8 @@ class CookingAgent:
             all_results += results
             committed.append(reply)
             committed.append(Message("tool", tool_results=results))
-            step_text = self._step_speech(results) or self._amount_speech(calls, results)
+            step_text = (self._step_speech(results) or self._amount_speech(calls, results)
+                         or self._dish_choice_speech(results))
             if step_text is not None:
                 # Read the step ourselves, word for word, instead of asking
                 # the model to: exact wording and one LLM round fewer.
@@ -645,6 +646,21 @@ class CookingAgent:
             return None  # a warning must be said: leave it to the model
         return " ".join(f"Okay, now {r.result['line']}." for r in results)
 
+    def _dish_choice_speech(self, results: list[ToolResult]) -> Optional[str]:
+        """"Here's Kaju Curry for 2." when a new recipe is built around something
+        the cook usually leaves out: the app asks about it next, and the model,
+        left to describe the recipe, talked about it wrongly ("I kept the
+        cashews as you usually include them"). A warning is left to the model."""
+        choice = self.session.dish_choice
+        if choice is None or len(results) != 1 or results[0].name != "get_recipe":
+            return None
+        res = results[0].result
+        if "built_around" not in res or res.get("warnings"):
+            return None
+        tailored = [t.replace(" (", ", ").replace(")", "") for t in res.get("tailored_to", [])]
+        made = f" Tailored to you: {'; '.join(tailored)}." if tailored else ""
+        return f"Here's {choice['name']} for {res['servings']}.{made}"
+
     @staticmethod
     def _step_speech(results: list[ToolResult]) -> Optional[str]:
         """'Step 3. <instruction exactly as stored>' when every call this round
@@ -669,7 +685,7 @@ class CookingAgent:
             return
         if not question:
             return
-        if model_asked:
+        if model_asked and self.session.awaiting is not Awaiting.DISH_CHOICE:
             return  # the model already ended on a question; don't stack a second one
         emit(question)
         self.on_text("assistant", question)

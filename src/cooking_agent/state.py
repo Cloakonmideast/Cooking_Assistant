@@ -56,6 +56,8 @@ class Awaiting(str, enum.Enum):
 
     TIMER = "start_timer"  # "Do you want me to start a timer for 12 minutes?"
     NEXT_STEP = "next_step"  # "Are you ready for the next step?"
+    # "Kaju Curry is built around cashews ... I'd go with almonds. Shall I, or keep the cashews?"
+    DISH_CHOICE = "keep_or_change_the_main_ingredient"
 
 
 @dataclass
@@ -100,6 +102,9 @@ class CookingSession:
     draft: Optional[RecipeDraft] = None
     setup_pending: bool = False  # first-run question about allergies/conditions/diet is open
     removed: list[str] = field(default_factory=list)  # ingredients the cook took out mid-recipe
+    # The dish is built around something the cook usually leaves out or swaps (kept):
+    # {"ingredient", "use_instead", "similar_dish", "pick", "question"}; "pick" is what a "yes" does.
+    dish_choice: Optional[dict] = None
 
     # -- recipe lifecycle -------------------------------------------------
     def load_recipe(self, recipe: Recipe) -> None:
@@ -112,6 +117,7 @@ class CookingSession:
         self.awaiting = None
         self.timed_steps = set()
         self.removed = []
+        self.dish_choice = None
 
     def _require_recipe(self) -> Recipe:
         if self.recipe is None:

@@ -333,6 +333,12 @@ Today only allergies and health conditions are checked in code; diets rely on th
 
 ## Plan history
 
+- **2026-11-16** — After Phase 2, at the cook's request: a habit isn't applied to a dish built around that
+  ingredient ("leave out cashews" for a kaju curry). The app keeps it, says so, offers two alternatives
+  (something to use instead, a similar dish) written by the model and safety-checked, and handles the answer
+  itself (yes / keep / the other one / naming one). A prompt-only version was tried first and failed on qwen3
+  3 of 3 (no options, wrong actions on the answer), so this lives in code (`dishes.py`, `Awaiting.DISH_CHOICE`).
+
 - **2026-11-15** — First version, written from the agreed "simple and local" scope.
 - **2026-11-15** — Revised after review by the advisor (Fable):
   - new Task 2, a smoke test against a real Ollama right after the adapter;

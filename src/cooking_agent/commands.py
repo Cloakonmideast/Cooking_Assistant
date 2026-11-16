@@ -21,9 +21,10 @@ from dataclasses import dataclass
 from typing import Optional
 
 from .providers.base import ToolCall, ToolResult
-from .recipe import format_minutes, parse_duration_minutes
+from .recipe import format_minutes, ingredient_words, parse_duration_minutes
 from .recipe_store import RecipeStore
 from .state import Awaiting, CookingPhase, CookingSession
+from .utterance import is_question
 
 STEP_RESULT_TOOLS = {"next_step", "previous_step", "repeat_step"}
 NO_REPLY = "No problem, take your time."
@@ -148,6 +149,54 @@ def _call(tool: str, **args) -> CommandMatch:
     return CommandMatch([ToolCall(tool, args)])
 
 
+# Answers to "Kaju Curry is built around cashews ... I'd go with almonds. Shall I, or keep the cashews?"
+_KEEP = _p(r"(?:no\s+)?(?:just\s+)?(?:keep\b.*|leave (?:it|them) (?:in|as (?:it is|they are|is))|"
+           r"(?:it's|its|that's|thats) fine(?: as it is)?)")
+_LEAVE_OUT = _p(r"(?:yes\s+)?(?:leave|take) (?:it|them|the [a-z ]+) out(?: anyway)?")
+_YOUR_PICK = _p(r"(?:(?:yes|yeah|yep|sure|ok|okay) )?"
+                r"(?:(?:go with|do|make|use|let's do|lets do|let's go with|lets go with) )?"
+                r"(?:that|that 1|it|your pick|your choice|the 1 you'd pick|what you'd pick|"  # "one" is "1" here
+                r"whatever you'd pick|the 1 you picked|what you said|what you suggested)")
+_CHOOSE = r"(?:(?:use|make|go with|do|let's do|lets do|let's go with|lets go with) )?"
+_FIRST = _p(_CHOOSE + r"(?:the )?first(?: 1| option)?")
+_SECOND = _p(_CHOOSE + r"(?:the )?second(?: 1| option)?")
+_OTHER = _p(_CHOOSE + r"(?:the )?other(?: 1| option)?(?: instead)?")
+
+
+def _dish_choice(t: str, choice: dict, servings: Optional[int]) -> Optional[CommandMatch]:
+    """The cook's answer to the app's built-around question, or None for the LLM."""
+    x, use, dish, pick = choice["ingredient"], choice.get("use_instead"), choice.get("similar_dish"), choice["pick"]
+
+    def do(kind: str) -> CommandMatch:
+        if kind == "use_instead":
+            return CommandMatch([ToolCall("substitute_ingredient", {"ingredient": x, "replacement": use})],
+                                reply=f"Okay, {use} instead of {x}.")
+        if kind == "similar_dish":
+            args = {"dish": dish} | ({"servings": servings} if servings else {})
+            return CommandMatch([ToolCall("get_recipe", args)])
+        return CommandMatch([ToolCall("change_recipe", {"action": "remove_ingredient", "ingredient": x})],
+                            reply=f"Okay, I've left out the {x}.")
+
+    if _KEEP.fullmatch(t) or _DECLINE.fullmatch(t):
+        return CommandMatch([], reply=f"Okay, keeping the {x}.")
+    if _LEAVE_OUT.fullmatch(t):
+        return do("leave_out")
+    if _YES.fullmatch(t) or _YOUR_PICK.fullmatch(t):
+        return do(pick)
+    listed = [k for k, v in (("use_instead", use), ("similar_dish", dish)) if v]  # in the order they were said
+    if listed and _FIRST.fullmatch(t):
+        return do(listed[0])
+    if len(listed) == 2 and _SECOND.fullmatch(t):
+        return do(listed[1])
+    if len(listed) == 2 and _OTHER.fullmatch(t):
+        return do(next(k for k in listed if k != pick))
+    said = set(ingredient_words(t))
+    named = [k for k in listed if said & set(ingredient_words(choice[k]))]
+    if len(named) == 1 and len(t.split()) <= 6:  # "almonds", "the paneer one", "make the paneer butter masala"
+        return do(named[0])
+    return None
+
+
 def _minutes(dur: str) -> Optional[float]:
     """'5 minutes and 30 seconds' -> 5.5 (each part parsed, then added)."""
     parts = [parse_duration_minutes(p) for p in dur.split(" and ")]
@@ -193,6 +242,10 @@ def match_command(text: str, session: CookingSession, store: Optional[RecipeStor
     # Right after the first-run question ("any allergies? ... if not, just say none"),
     # yes/no/next/that's all are answers to it, not commands.
     answers_held = setup_open
+    if awaiting is Awaiting.DISH_CHOICE and session.dish_choice and not answers_held and not is_question(text):
+        choice = _dish_choice(t, session.dish_choice, session.target_servings)
+        if choice is not None:
+            return choice
     if awaiting is not None and not answers_held:
         if awaiting is Awaiting.TIMER and (_YES.fullmatch(t) or _YES_TIMER.fullmatch(t)):
             return _call("start_step_timer")
@@ -260,7 +313,11 @@ def _one(r: ToolResult) -> Optional[str]:
     if r.name == "scale_servings":
         return f"Okay, for {res['servings']}: " + ". ".join(res["ingredients"]) + "."
     if r.name == "get_recipe":
-        found = f"Found {res['title']} in your recipe book, for {res['servings']}. Say ready to start."
+        if res.get("source") == "your recipe book":
+            found = f"Found {res['title']} in your recipe book, for {res['servings']}. Say ready to start."
+        else:  # written just now, e.g. the similar dish the cook chose instead
+            found = (f"Okay, here's {res['title']} for {res['servings']}: {res['ingredient_count']} ingredients "
+                     f"and {res['step_count']} steps. Say ready to start.")
         warnings = res.get("warnings") or []
         return (f"Heads up: this recipe {'; '.join(warnings)}. " if warnings else "") + found
     if r.name == "end_session":

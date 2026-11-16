@@ -351,6 +351,21 @@ usually ask for vegetarian but never said so) gives a heads-up if a recipe
 breaks it ("this has chicken, and you usually cook vegetarian") but never
 forces a rewrite; only a diet you've stated does that.
 
+A habit isn't applied to a dish built around that ingredient. If you usually
+leave out cashews and ask for a kaju curry, the cashews stay, and the app
+says so and offers better options: "Kaju Curry is built around cashews, so I
+kept them in, though you usually leave them out. You could use coconut milk
+instead, or make coconut curry. I'd go with coconut milk. Shall I, or keep the
+cashews?" Answer "yes" (its pick), "keep them", "the other one", or name an
+option ("coconut milk", "the curry one"). The options are written by the model
+and checked against your allergies, conditions and diet. A usual swap works
+the same way: for ghee rice it asks "Shall I use butter anyway, or keep the
+ghee?". The dish name is checked in English and in common Indian names (kaju,
+aloo, palak, gobi, jeera, murgh, and so on), and the recipe writer is told
+what those words mean, because it once wrote a kaju curry with almonds. Only
+the dish name counts: "pulao with cashews" isn't a cashew dish, and "more" or
+"less" habits still apply.
+
 New recipes are written to fit: allergies are always excluded, health
 conditions are turned into concrete cooking rules (lactose intolerance: no
 milk, cream, paneer, yogurt, lactose-free or plant versions are fine; celiac:
